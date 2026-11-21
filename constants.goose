@@ -1,0 +1,404 @@
+// Win32 API constants for Goose (64-bit Windows).
+namespace win32;
+
+// Window class styles (CS_*).
+let CS_VREDRAW: u32 = 0x0001;
+let CS_HREDRAW: u32 = 0x0002;
+let CS_DBLCLKS: u32 = 0x0008;
+let CS_OWNDC: u32 = 0x0020;
+
+// Window styles (WS_*).
+let WS_OVERLAPPED: u32 = 0x00000000;
+let WS_POPUP: u32 = 0x80000000;
+let WS_CHILD: u32 = 0x40000000;
+let WS_MINIMIZE: u32 = 0x20000000;
+let WS_VISIBLE: u32 = 0x10000000;
+let WS_DISABLED: u32 = 0x08000000;
+let WS_CLIPSIBLINGS: u32 = 0x04000000;
+let WS_CLIPCHILDREN: u32 = 0x02000000;
+let WS_MAXIMIZE: u32 = 0x01000000;
+let WS_CAPTION: u32 = 0x00C00000;
+let WS_BORDER: u32 = 0x00800000;
+let WS_DLGFRAME: u32 = 0x00400000;
+let WS_VSCROLL: u32 = 0x00200000;
+let WS_HSCROLL: u32 = 0x00100000;
+let WS_SYSMENU: u32 = 0x00080000;
+let WS_THICKFRAME: u32 = 0x00040000;
+let WS_MINIMIZEBOX: u32 = 0x00020000;
+let WS_MAXIMIZEBOX: u32 = 0x00010000;
+let WS_OVERLAPPEDWINDOW: u32 =
+    WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
+
+// Extended window styles (WS_EX_*).
+let WS_EX_TOPMOST: u32 = 0x00000008;
+let WS_EX_ACCEPTFILES: u32 = 0x00000010;
+let WS_EX_CLIENTEDGE: u32 = 0x00000200;
+let WS_EX_APPWINDOW: u32 = 0x00040000;
+let WS_EX_LAYERED: u32 = 0x00080000;
+
+// Default window position/size sentinel.
+let CW_USEDEFAULT: i32 = -2147483648;
+
+// ShowWindow commands (SW_*).
+let SW_HIDE: i32 = 0;
+let SW_SHOWNORMAL: i32 = 1;
+let SW_SHOWMINIMIZED: i32 = 2;
+let SW_SHOWMAXIMIZED: i32 = 3;
+let SW_SHOWNOACTIVATE: i32 = 4;
+let SW_SHOW: i32 = 5;
+let SW_MINIMIZE: i32 = 6;
+let SW_RESTORE: i32 = 9;
+
+// Window messages (WM_*).
+let WM_DESTROY: u32 = 0x0002;
+let WM_SIZE: u32 = 0x0005;
+let WM_SETFOCUS: u32 = 0x0007;
+let WM_KILLFOCUS: u32 = 0x0008;
+let WM_PAINT: u32 = 0x000F;
+let WM_CLOSE: u32 = 0x0010;
+let WM_QUIT: u32 = 0x0012;
+let WM_ERASEBKGND: u32 = 0x0014;
+let WM_INPUT: u32 = 0x00FF;
+let WM_KEYDOWN: u32 = 0x0100;
+let WM_KEYUP: u32 = 0x0101;
+let WM_CHAR: u32 = 0x0102;
+let WM_SYSKEYDOWN: u32 = 0x0104;
+let WM_SYSKEYUP: u32 = 0x0105;
+let WM_COMMAND: u32 = 0x0111;
+let WM_TIMER: u32 = 0x0113;
+let WM_MOUSEMOVE: u32 = 0x0200;
+let WM_LBUTTONDOWN: u32 = 0x0201;
+let WM_LBUTTONUP: u32 = 0x0202;
+let WM_RBUTTONDOWN: u32 = 0x0204;
+let WM_RBUTTONUP: u32 = 0x0205;
+let WM_MBUTTONDOWN: u32 = 0x0207;
+let WM_MBUTTONUP: u32 = 0x0208;
+let WM_MOUSEWHEEL: u32 = 0x020A;
+let WM_DROPFILES: u32 = 0x0233;
+let WM_DPICHANGED: u32 = 0x02E0;
+let WM_HOTKEY: u32 = 0x0312;
+let WM_TRAYICON: u32 = 0x8001; // WM_APP + 1
+
+// MessageBox flags (MB_*) and return IDs (ID*).
+let MB_OK: u32 = 0x00000000;
+let MB_OKCANCEL: u32 = 0x00000001;
+let MB_ABORTRETRYIGNORE: u32 = 0x00000002;
+let MB_YESNOCANCEL: u32 = 0x00000003;
+let MB_YESNO: u32 = 0x00000004;
+let MB_RETRYCANCEL: u32 = 0x00000005;
+let MB_ICONERROR: u32 = 0x00000010;
+let MB_ICONQUESTION: u32 = 0x00000020;
+let MB_ICONWARNING: u32 = 0x00000030;
+let MB_ICONINFORMATION: u32 = 0x00000040;
+let MB_DEFBUTTON1: u32 = 0x00000000;
+let MB_DEFBUTTON2: u32 = 0x00000100;
+let MB_DEFBUTTON3: u32 = 0x00000200;
+let MB_TOPMOST: u32 = 0x00040000;
+
+// Menu flags (MF_*).
+let MF_BYCOMMAND: u32 = 0x00000000;
+let MF_BYPOSITION: u32 = 0x00000400;
+let MF_STRING: u32 = 0x00000000;
+let MF_ENABLED: u32 = 0x00000000;
+let MF_GRAYED: u32 = 0x00000001;
+let MF_DISABLED: u32 = 0x00000002;
+let MF_UNCHECKED: u32 = 0x00000000;
+let MF_CHECKED: u32 = 0x00000008;
+let MF_POPUP: u32 = 0x00000010;
+let MF_SEPARATOR: u32 = 0x00000800;
+
+// TrackPopupMenu flags (TPM_*).
+let TPM_LEFTBUTTON: u32 = 0x0000;
+let TPM_RIGHTBUTTON: u32 = 0x0002;
+let TPM_LEFTALIGN: u32 = 0x0000;
+let TPM_CENTERALIGN: u32 = 0x0004;
+let TPM_RIGHTALIGN: u32 = 0x0008;
+let TPM_TOPALIGN: u32 = 0x0000;
+let TPM_VCENTERALIGN: u32 = 0x0010;
+let TPM_BOTTOMALIGN: u32 = 0x0020;
+let TPM_NONOTIFY: u32 = 0x0080;
+let TPM_RETURNCMD: u32 = 0x0100;
+
+let IDOK: i32 = 1;
+let IDCANCEL: i32 = 2;
+let IDABORT: i32 = 3;
+let IDRETRY: i32 = 4;
+let IDIGNORE: i32 = 5;
+let IDYES: i32 = 6;
+let IDNO: i32 = 7;
+
+// Common virtual-key codes (VK_*).
+let VK_BACK: u32 = 0x08;
+let VK_TAB: u32 = 0x09;
+let VK_RETURN: u32 = 0x0D;
+let VK_SHIFT: u32 = 0x10;
+let VK_CONTROL: u32 = 0x11;
+let VK_MENU: u32 = 0x12;
+let VK_ESCAPE: u32 = 0x1B;
+let VK_SPACE: u32 = 0x20;
+let VK_LEFT: u32 = 0x25;
+let VK_UP: u32 = 0x26;
+let VK_RIGHT: u32 = 0x27;
+let VK_DOWN: u32 = 0x28;
+let VK_DELETE: u32 = 0x2E;
+let VK_F1: u32 = 0x70;
+let VK_F2: u32 = 0x71;
+let VK_F3: u32 = 0x72;
+let VK_F4: u32 = 0x73;
+let VK_F5: u32 = 0x74;
+let VK_F6: u32 = 0x75;
+let VK_F7: u32 = 0x76;
+let VK_F8: u32 = 0x77;
+let VK_F9: u32 = 0x78;
+let VK_F10: u32 = 0x79;
+let VK_F11: u32 = 0x7A;
+let VK_F12: u32 = 0x7B;
+
+// System metrics (SM_*).
+let SM_CXSCREEN: i32 = 0;
+let SM_CYSCREEN: i32 = 1;
+
+// GDI DrawText format flags (DT_*).
+let DT_TOP: u32 = 0x00000000;
+let DT_LEFT: u32 = 0x00000000;
+let DT_CENTER: u32 = 0x00000001;
+let DT_RIGHT: u32 = 0x00000002;
+let DT_VCENTER: u32 = 0x00000004;
+let DT_BOTTOM: u32 = 0x00000008;
+let DT_WORDBREAK: u32 = 0x00000010;
+let DT_SINGLELINE: u32 = 0x00000020;
+let DT_NOCLIP: u32 = 0x00000100;
+
+// GDI background modes & pen styles.
+let TRANSPARENT: i32 = 1;
+let OPAQUE: i32 = 2;
+
+let PS_SOLID: i32 = 0;
+let PS_DASH: i32 = 1;
+let PS_DOT: i32 = 2;
+let PS_NULL: i32 = 5;
+
+// GDI stock objects.
+let WHITE_BRUSH: i32 = 0;
+let LTGRAY_BRUSH: i32 = 1;
+let GRAY_BRUSH: i32 = 2;
+let DKGRAY_BRUSH: i32 = 3;
+let BLACK_BRUSH: i32 = 4;
+let NULL_BRUSH: i32 = 5;
+let WHITE_PEN: i32 = 6;
+let BLACK_PEN: i32 = 7;
+let NULL_PEN: i32 = 8;
+let DEFAULT_GUI_FONT: i32 = 17;
+
+// Clipboard formats (CF_*).
+let CF_TEXT: u32 = 1;
+let CF_BITMAP: u32 = 2;
+let CF_UNICODETEXT: u32 = 13;
+let CF_HDROP: u32 = 15;
+
+// File access rights (GENERIC_*).
+let GENERIC_READ: u32 = 0x80000000;
+let GENERIC_WRITE: u32 = 0x40000000;
+let GENERIC_EXECUTE: u32 = 0x20000000;
+let GENERIC_ALL: u32 = 0x10000000;
+
+// File share modes (FILE_SHARE_*).
+let FILE_SHARE_NONE: u32 = 0x00000000;
+let FILE_SHARE_READ: u32 = 0x00000001;
+let FILE_SHARE_WRITE: u32 = 0x00000002;
+let FILE_SHARE_DELETE: u32 = 0x00000004;
+
+// File creation dispositions.
+let CREATE_NEW: u32 = 1;
+let CREATE_ALWAYS: u32 = 2;
+let OPEN_EXISTING: u32 = 3;
+let OPEN_ALWAYS: u32 = 4;
+let TRUNCATE_EXISTING: u32 = 5;
+
+// File attributes (FILE_ATTRIBUTE_*).
+let FILE_ATTRIBUTE_READONLY: u32 = 0x00000001;
+let FILE_ATTRIBUTE_HIDDEN: u32 = 0x00000002;
+let FILE_ATTRIBUTE_SYSTEM: u32 = 0x00000004;
+let FILE_ATTRIBUTE_DIRECTORY: u32 = 0x00000010;
+let FILE_ATTRIBUTE_ARCHIVE: u32 = 0x00000020;
+let FILE_ATTRIBUTE_NORMAL: u32 = 0x00000080;
+let INVALID_FILE_ATTRIBUTES: u32 = 0xFFFFFFFF;
+
+// SetFilePointerEx move methods.
+let FILE_BEGIN: u32 = 0;
+let FILE_CURRENT: u32 = 1;
+let FILE_END: u32 = 2;
+
+let INVALID_HANDLE_VALUE: u64 = 0xFFFFFFFFFFFFFFFF;
+
+// Synchronization & wait constants.
+let INFINITE: u32 = 0xFFFFFFFF;
+let WAIT_OBJECT_0: u32 = 0x00000000;
+let WAIT_ABANDONED: u32 = 0x00000080;
+let WAIT_TIMEOUT: u32 = 0x00000102;
+let WAIT_FAILED: u32 = 0xFFFFFFFF;
+let ERROR_ALREADY_EXISTS: u32 = 183;
+
+let SYNCHRONIZE: u32 = 0x00100000;
+let MUTEX_MODIFY_STATE: u32 = 0x0001;
+let MUTEX_ALL_ACCESS: u32 = 0x001F0001;
+let SEMAPHORE_MODIFY_STATE: u32 = 0x0002;
+let SEMAPHORE_ALL_ACCESS: u32 = 0x001F0003;
+let EVENT_MODIFY_STATE: u32 = 0x0002;
+let EVENT_ALL_ACCESS: u32 = 0x001F0003;
+
+// Directory change notification filters (FILE_NOTIFY_CHANGE_*).
+let FILE_NOTIFY_CHANGE_FILE_NAME: u32 = 0x00000001;
+let FILE_NOTIFY_CHANGE_DIR_NAME: u32 = 0x00000002;
+let FILE_NOTIFY_CHANGE_ATTRIBUTES: u32 = 0x00000004;
+let FILE_NOTIFY_CHANGE_SIZE: u32 = 0x00000008;
+let FILE_NOTIFY_CHANGE_LAST_WRITE: u32 = 0x00000010;
+
+// Registry predefined keys (HKEY_*) and access rights (KEY_*).
+let HKEY_CLASSES_ROOT: u64 = 0x80000000;
+let HKEY_CURRENT_USER: u64 = 0x80000001;
+let HKEY_LOCAL_MACHINE: u64 = 0x80000002;
+let HKEY_USERS: u64 = 0x80000003;
+
+let KEY_READ: u32 = 0x20019;
+let KEY_WRITE: u32 = 0x20006;
+let KEY_ALL_ACCESS: u32 = 0xF003F;
+
+// Hotkey modifiers (MOD_*).
+let MOD_ALT: u32 = 0x0001;
+let MOD_CONTROL: u32 = 0x0002;
+let MOD_SHIFT: u32 = 0x0004;
+let MOD_WIN: u32 = 0x0008;
+let MOD_NOREPEAT: u32 = 0x4000;
+
+// DWM window corner & backdrop preferences (Windows 11).
+let DWMWCP_DEFAULT: u32 = 0;
+let DWMWCP_DONOTROUND: u32 = 1;
+let DWMWCP_ROUND: u32 = 2;
+let DWMWCP_ROUNDSMALL: u32 = 3;
+
+let DWMSBT_AUTO: u32 = 0;
+let DWMSBT_NONE: u32 = 1;
+let DWMSBT_MAINWINDOW: u32 = 2;      // Mica
+let DWMSBT_TRANSIENTWINDOW: u32 = 3; // Acrylic
+let DWMSBT_TABBEDWINDOW: u32 = 4;    // Tabbed Mica
+
+// Known folder kinds for win32::known_folder_path.
+let KNOWN_FOLDER_DESKTOP: i32 = 0;
+let KNOWN_FOLDER_DOCUMENTS: i32 = 1;
+let KNOWN_FOLDER_DOWNLOADS: i32 = 2;
+let KNOWN_FOLDER_APPDATA: i32 = 3;
+let KNOWN_FOLDER_LOCAL_APPDATA: i32 = 4;
+let KNOWN_FOLDER_PICTURES: i32 = 5;
+let KNOWN_FOLDER_MUSIC: i32 = 6;
+let KNOWN_FOLDER_VIDEOS: i32 = 7;
+let KNOWN_FOLDER_PROFILE: i32 = 8;
+
+// Tray balloon notification icon flags (NIIF_*).
+let NIIF_NONE: u32 = 0x00000000;
+let NIIF_INFO: u32 = 0x00000001;
+let NIIF_WARNING: u32 = 0x00000002;
+let NIIF_ERROR: u32 = 0x00000003;
+
+// Control styles & messages.
+let BS_PUSHBUTTON: u32 = 0x00000000;
+let BS_DEFPUSHBUTTON: u32 = 0x00000001;
+let BS_AUTOCHECKBOX: u32 = 0x00000003;
+let BM_GETCHECK: u32 = 0x00F0;
+let BM_SETCHECK: u32 = 0x00F1;
+let BST_UNCHECKED: u64 = 0;
+let BST_CHECKED: u64 = 1;
+
+let SS_LEFT: u32 = 0x00000000;
+let SS_CENTER: u32 = 0x00000001;
+let SS_RIGHT: u32 = 0x00000002;
+
+let ES_LEFT: u32 = 0x0000;
+let ES_MULTILINE: u32 = 0x0004;
+let ES_AUTOVSCROLL: u32 = 0x0040;
+let ES_AUTOHSCROLL: u32 = 0x0080;
+let ES_READONLY: u32 = 0x0800;
+
+let LBS_NOTIFY: u32 = 0x0001;
+let LB_RESETCONTENT: u32 = 0x0184;
+let LB_SETCURSEL: u32 = 0x0186;
+let LB_GETCURSEL: u32 = 0x0188;
+let LB_GETCOUNT: u32 = 0x018B;
+
+let CBS_DROPDOWNLIST: u32 = 0x0003;
+let CB_GETCOUNT: u32 = 0x0146;
+let CB_GETCURSEL: u32 = 0x0147;
+let CB_RESETCONTENT: u32 = 0x014B;
+let CB_SETCURSEL: u32 = 0x014E;
+
+let PBM_SETRANGE32: u32 = 0x0406;
+let PBM_SETPOS: u32 = 0x0402;
+let PBM_GETPOS: u32 = 0x0408;
+
+let WS_TABSTOP: u32 = 0x00010000;
+
+// XInput gamepad button bitmasks (XINPUT_GAMEPAD_*).
+let XINPUT_DPAD_UP: u16 = 0x0001;
+let XINPUT_DPAD_DOWN: u16 = 0x0002;
+let XINPUT_DPAD_LEFT: u16 = 0x0004;
+let XINPUT_DPAD_RIGHT: u16 = 0x0008;
+let XINPUT_START: u16 = 0x0010;
+let XINPUT_BACK: u16 = 0x0020;
+let XINPUT_LEFT_THUMB: u16 = 0x0040;
+let XINPUT_RIGHT_THUMB: u16 = 0x0080;
+let XINPUT_LEFT_SHOULDER: u16 = 0x0100;
+let XINPUT_RIGHT_SHOULDER: u16 = 0x0200;
+let XINPUT_A: u16 = 0x1000;
+let XINPUT_B: u16 = 0x2000;
+let XINPUT_X: u16 = 0x4000;
+let XINPUT_Y: u16 = 0x8000;
+
+// System cursor resource IDs (IDC_*).
+let IDC_ARROW: u32 = 32512;
+let IDC_IBEAM: u32 = 32513;
+let IDC_WAIT: u32 = 32514;
+let IDC_CROSS: u32 = 32515;
+let IDC_SIZENWSE: u32 = 32642;
+let IDC_SIZENESW: u32 = 32643;
+let IDC_SIZEWE: u32 = 32644;
+let IDC_SIZENS: u32 = 32645;
+let IDC_SIZEALL: u32 = 32646;
+let IDC_NO: u32 = 32648;
+let IDC_HAND: u32 = 32649;
+let IDC_APPSTARTING: u32 = 32650;
+
+// Trackbar / Slider styles & messages (TBS_*, TBM_*).
+let TBS_HORZ: u32 = 0x0000;
+let TBS_AUTOTICKS: u32 = 0x0001;
+let TBS_VERT: u32 = 0x0002;
+let TBM_GETPOS: u32 = 0x0400;
+let TBM_SETPOS: u32 = 0x0405;
+let TBM_SETRANGEMIN: u32 = 0x0407;
+let TBM_SETRANGEMAX: u32 = 0x0408;
+
+// Tab Control messages (TCM_*).
+let TCM_GETITEMCOUNT: u32 = 0x1304;
+let TCM_DELETEITEM: u32 = 0x1308;
+let TCM_DELETEALLITEMS: u32 = 0x1309;
+let TCM_GETCURSEL: u32 = 0x130B;
+let TCM_SETCURSEL: u32 = 0x130C;
+
+// Status Bar styles.
+let SBARS_SIZEGRIP: u32 = 0x0100;
+
+// Virtual memory allocation types (MEM_*) and page protections (PAGE_*).
+let MEM_COMMIT: u32 = 0x00001000;
+let MEM_RESERVE: u32 = 0x00002000;
+let MEM_RELEASE: u32 = 0x00008000;
+
+let PAGE_NOACCESS: u32 = 0x01;
+let PAGE_READONLY: u32 = 0x02;
+let PAGE_READWRITE: u32 = 0x04;
+let PAGE_EXECUTE_READ: u32 = 0x20;
+let PAGE_EXECUTE_READWRITE: u32 = 0x40;
+
+// Power / sleep execution state flags (ES_* for SetThreadExecutionState).
+let ES_SYSTEM_REQUIRED: u32 = 0x00000001;
+let ES_DISPLAY_REQUIRED: u32 = 0x00000002;
+let ES_AWAYMODE_REQUIRED: u32 = 0x00000040;
+let ES_CONTINUOUS: u32 = 0x80000000;

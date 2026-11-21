@@ -1,0 +1,19 @@
+# Build & compiler artifacts
+*.exe
+*.obj
+*.o
+*.lib
+*.a
+*.pdb
+*.ilk
+*.exp
+*.dll
+.goose-cache/
+build/
+out/
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

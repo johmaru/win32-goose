@@ -1,0 +1,59 @@
+// win32 package build configuration.
+//
+// Most Win32 functions are bound directly from kernel32.dll, user32.dll and
+// gdi32.dll via `extern "dll" { ... }` blocks (raw.goose). Only the pieces
+// that require C callbacks (WndProc / DlgProc), pointers inside Win32 structs
+// (WNDCLASSEXW / OPENFILENAMEW / CHOOSECOLORW / COM IFileOpenDialog),
+// 2-byte aligned UTF-16 buffers, or runtime builder writes live in the thin
+// C shim under src/.
+
+c_sources_windows = [
+    "src/win32_shim.c",
+    "src/win32_dialogs.c",
+    "src/win32_io.c",
+    "src/win32_sync.c",
+    "src/win32_dib.c",
+    "src/win32_d3d11.c",
+    "src/win32_d2d.c",
+    "src/win32_gl.c",
+    "src/win32_system.c",
+    "src/win32_net.c",
+    "src/win32_display.c",
+    "src/win32_desktop.c",
+    "src/win32_controls.c",
+    "src/win32_game.c",
+    "src/win32_audio.c",
+    "src/win32_video.c",
+    "src/win32_wic.c",
+];
+c_include = ["include"];
+c_libs_windows = [
+    "user32",
+    "gdi32",
+    "kernel32",
+    "advapi32",
+    "comdlg32",
+    "comctl32",
+    "shell32",
+    "shcore",
+    "dwmapi",
+    "ole32",
+    "propsys",
+    "windowscodecs",
+    "winmm",
+    "xinput",
+    "mfplat",
+    "mfreadwrite",
+    "mfuuid",
+    "d3d11",
+    "dxgi",
+    "dxguid",
+    "d3dcompiler",
+    "d2d1",
+    "dwrite",
+    "opengl32",
+    "ws2_32",
+    "winhttp",
+];
+main_thread_only = true;
+exclude = ["examples", "test"];
