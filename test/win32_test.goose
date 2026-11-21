@@ -1144,6 +1144,113 @@ fn test_cursor_fullscreen_raw_input() {
     print("[OK] cursor, borderless fullscreen, mouse capture & raw mouse input");
 }
 
+fn test_bugfix_regressions() {
+    // 1. UTF-8 / UTF-16 invalid sequences: overlong 4-byte UTF-8 and lone surrogates -> U+FFFD.
+    let overlong4: u8[4] = [0xF0, 0x80, 0x80, 0x80];
+    let w_over = win32::utf8_to_utf16z(overlong4);
+    assert(w_over.len == 5 && w_over[0] == 0xFFFD && w_over[4] == 0);
+
+    let lone_hi: u16[1] = [0xD800];
+    let u_hi = win32::utf16_to_utf8(lone_hi);
+    assert(u_hi.len == 3 && u_hi[0] == 0xEF && u_hi[1] == 0xBF && u_hi[2] == 0xBD);
+
+    let lone_lo: u16[1] = [0xDC00];
+    let u_lo = win32::utf16_to_utf8(lone_lo);
+    assert(u_lo.len == 3 && u_lo[0] == 0xEF && u_lo[1] == 0xBF && u_lo[2] == 0xBD);
+
+    // 2. 64-bit HKEY_* constants are sign-extended per winreg.h.
+    assert(win32::HKEY_CURRENT_USER == 0xFFFFFFFF80000001);
+
+    // 3. run_process_capture must respect timeout_ms even when child keeps stdout open.
+    {
+        var out: u8[>..] = [];
+        var code: u32 = 0;
+        let t0 = win32::tick_count_ms();
+        let ok = win32::run_process_capture("cmd.exe /c ping -n 6 127.0.0.1", out, code, 150);
+        let elapsed = win32::tick_count_ms() - t0;
+        assert(!ok);
+        assert(elapsed < 2500);
+    }
+
+    // 4. file_map_open must reject INVALID_HANDLE_VALUE (must not create pagefile mapping).
+    {
+        let bad_f = win32::Hfile { raw: win32::INVALID_HANDLE_VALUE };
+        let bad_mm = win32::file_map_open(bad_f, true, 4096);
+        assert(!bad_mm.is_valid());
+    }
+
+    // 5. Empty REG_SZ registry string round-trip.
+    {
+        var subkey: u8[>..] = [];
+        format(subkey, "Software\\Win32GooseRegEmpty_", win32::GetCurrentProcessId());
+        defer win32::reg_delete_key(win32::HKEY_CURRENT_USER, subkey);
+        let k = win32::reg_create_key(win32::HKEY_CURRENT_USER, subkey);
+        assert(k.is_valid());
+        defer k.close();
+        assert(k.set_string("Empty", ""));
+        var got: u8[>..] = [];
+        assert(k.get_string("Empty", got) && got.len == 0);
+    }
+
+    // 6. WSAPoll on closed socket must report error (< 0), not ready (> 0).
+    {
+        let s = win32::udp_bind("127.0.0.1", 0);
+        assert(s.is_valid());
+        let raw_s = s;
+        assert(s.close());
+        assert(raw_s.poll_readable(0) < 0);
+    }
+
+    // 7. play_wav_bytes rejects truncated / non-RIFF buffers safely.
+    {
+        let tiny: u8[8] = [0x52, 0x49, 0x46, 0x46, 0xFF, 0xFF, 0x00, 0x00];
+        assert(!win32::play_wav_bytes(tiny, false));
+        assert(!win32::play_wav_bytes(tiny, true));
+    }
+
+    // 8. DIB helpers guard against out-of-bounds dimensions and large radius overflow.
+    {
+        var px: u32[16] = [0; 16];
+        win32::fill_pixel_rect(px, 100, 100, -10, -10, 200, 200, 0xFFFFFFFF);
+        win32::fill_pixel_circle(px, 4, 4, 2, 2, 100000, 0xFF112233);
+        assert(px[0] == 0xFF112233);
+    }
+
+    // 9. D3D11 partial update of a non-dynamic (DEFAULT) vertex buffer + multiple fullscreen windows.
+    {
+        let w1 = win32::create_window("win32-goose reg1", 128, 128);
+        let w2 = win32::create_window("win32-goose reg2", 128, 128);
+        assert(w1.is_valid() && w2.is_valid());
+        assert(w1.set_borderless_fullscreen(true));
+        assert(w2.set_borderless_fullscreen(true));
+        assert(w1.set_borderless_fullscreen(false));
+        assert(w2.set_borderless_fullscreen(false));
+
+        let dev = win32::d3d11_create(w1, false);
+        assert(dev.is_valid());
+        let v3: win32::D3dVertex[3] = [
+            win32::D3dVertex { x: 0.0, y: 0.0, z: 0.0 },
+            win32::D3dVertex { x: 1.0, y: 0.0, z: 0.0 },
+            win32::D3dVertex { x: 0.0, y: 1.0, z: 0.0 },
+        ];
+        let vb = dev.create_vertex_buffer(v3, false);
+        assert(vb.is_valid());
+        let v1: win32::D3dVertex[1] = [win32::D3dVertex { x: 0.5, y: 0.5, z: 0.0 }];
+        assert(dev.update_vertex_buffer(vb, v1));
+        vb.destroy();
+        dev.destroy();
+
+        let sb = w1.create_statusbar(301, "ok");
+        assert(sb.is_valid());
+        assert(!sb.statusbar_set_text("bad", 256));
+
+        w1.destroy();
+        w2.destroy();
+    }
+
+    print("[OK] bugfix regressions (utf16, timeout, filemap, reg, poll, wav, dib, d3d11, fullscreen)");
+}
+
 // Ensures every interactive/file-backed shim symbol resolves and links under both JIT and AOT.
 fn verify_dialog_linkage(run_ui: bool) {
     guard run_ui;
@@ -1182,6 +1289,7 @@ fn main() {
     test_phase_c();
     test_wic_and_gpu_textures();
     test_cursor_fullscreen_raw_input();
+    test_bugfix_regressions();
     verify_dialog_linkage(false);
     print("ALL WIN32 TESTS PASSED");
 }

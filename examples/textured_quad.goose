@@ -45,7 +45,7 @@ fn main() {
             let r = (x * 2) as! u8;
             let g = (y * 2) as! u8;
             let b: u8 = if checker == 0 { 220 } else { 70 };
-            bgra.push(win32::argb(255, r, g, b));
+            bgra.push(win32::argb(r, g, b, 255));
         }
     }
 
@@ -92,6 +92,10 @@ fn main() {
         while win32::poll_event(ev) {
             if ev.msg == win32::WM_QUIT {
                 running = false;
+            } else if ev.msg == win32::WM_CLOSE {
+                running = false;
+            } else if ev.msg == win32::WM_DESTROY {
+                win32::post_quit_message(0);
             } else if ev.msg == win32::WM_SIZE && ev.width > 0 && ev.height > 0 {
                 dev.resize(ev.width, ev.height);
             } else if ev.msg == win32::WM_INPUT {

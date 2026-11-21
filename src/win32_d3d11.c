@@ -199,7 +199,7 @@ void w32_d3d11_destroy(uint32_t dev_id) {
 uint8_t w32_d3d11_resize(uint32_t dev_id, int32_t width, int32_t height) {
     w32_d3d_dev *d = get_dev(dev_id);
     if (!d || width <= 0 || height <= 0) return 0;
-    if (d->width == width && d->height == height) return 1;
+    if (d->rtv && d->width == width && d->height == height) return 1;
 
     release_targets(d);
     HRESULT hr = IDXGISwapChain_ResizeBuffers(
@@ -422,6 +422,7 @@ static uint32_t alloc_buf_slot(void) {
 uint32_t w32_d3d11_create_vertex_buffer(uint32_t dev_id, w32_d3d_vertex_slice verts, uint8_t dynamic) {
     w32_d3d_dev *d = get_dev(dev_id);
     if (!d || !verts.data || verts.len <= 0) return 0;
+    if ((uint64_t)verts.len > UINT32_MAX / sizeof(w32_d3d_vertex)) return 0;
 
     uint32_t id = alloc_buf_slot();
     if (!id) return 0;
@@ -451,7 +452,7 @@ uint32_t w32_d3d11_create_vertex_buffer(uint32_t dev_id, w32_d3d_vertex_slice ve
 
 uint32_t w32_d3d11_create_constant_buffer(uint32_t dev_id, uint32_t byte_size) {
     w32_d3d_dev *d = get_dev(dev_id);
-    if (!d || byte_size == 0) return 0;
+    if (!d || byte_size == 0 || byte_size > 0xFFFFFFF0u) return 0;
 
     uint32_t id = alloc_buf_slot();
     if (!id) return 0;
@@ -487,7 +488,12 @@ static uint8_t update_buf_raw(w32_d3d_dev *d, w32_d3d_buf *b, const void *src, s
         ID3D11DeviceContext_Unmap(d->ctx, (ID3D11Resource *)b->buf, 0);
         return 1;
     }
-    ID3D11DeviceContext_UpdateSubresource(d->ctx, (ID3D11Resource *)b->buf, 0, NULL, src, 0, 0);
+    if (n < b->byte_size) {
+        D3D11_BOX box = { 0, 0, 0, (UINT)n, 1, 1 };
+        ID3D11DeviceContext_UpdateSubresource(d->ctx, (ID3D11Resource *)b->buf, 0, &box, src, 0, 0);
+    } else {
+        ID3D11DeviceContext_UpdateSubresource(d->ctx, (ID3D11Resource *)b->buf, 0, NULL, src, 0, 0);
+    }
     return 1;
 }
 
@@ -708,7 +714,12 @@ uint32_t w32_d3d11_create_pipeline_textured(
     }
 
     if (FAILED(hr)) {
-        w32_d3d11_destroy_pipeline((uint32_t)(slot + 1));
+        if (p->blend) ID3D11BlendState_Release(p->blend);
+        if (p->ds) ID3D11DepthStencilState_Release(p->ds);
+        if (p->rast) ID3D11RasterizerState_Release(p->rast);
+        if (p->layout) ID3D11InputLayout_Release(p->layout);
+        if (p->ps) ID3D11PixelShader_Release(p->ps);
+        if (p->vs) ID3D11VertexShader_Release(p->vs);
         memset(p, 0, sizeof(*p));
         return 0;
     }
@@ -719,6 +730,7 @@ uint32_t w32_d3d11_create_pipeline_textured(
 uint32_t w32_d3d11_create_tex_vertex_buffer(uint32_t dev_id, w32_tex_vertex_slice verts, uint8_t dynamic) {
     w32_d3d_dev *d = get_dev(dev_id);
     if (!d || !verts.data || verts.len <= 0) return 0;
+    if ((uint64_t)verts.len > UINT32_MAX / sizeof(w32_tex_vertex)) return 0;
     uint32_t id = alloc_buf_slot();
     if (!id) return 0;
 
@@ -743,6 +755,7 @@ uint32_t w32_d3d11_create_tex_vertex_buffer(uint32_t dev_id, w32_tex_vertex_slic
 uint32_t w32_d3d11_create_index_buffer(uint32_t dev_id, w32_u32_slice indices) {
     w32_d3d_dev *d = get_dev(dev_id);
     if (!d || !indices.data || indices.len <= 0) return 0;
+    if ((uint64_t)indices.len > UINT32_MAX / sizeof(uint32_t)) return 0;
     uint32_t id = alloc_buf_slot();
     if (!id) return 0;
 

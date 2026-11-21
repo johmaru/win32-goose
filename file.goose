@@ -177,6 +177,7 @@ extern fn volume_info(root_path: const u8[:], out_label: u8[>..]&, out_fs: u8[>.
 extern fn shim_watch_dir_open(path: const u8[:], watch_subtree: bool, filter: u32) -> u64 = "w32_watch_dir_open";
 
 fn file_map_open(f: Hfile, writable: bool = false, max_size: u64 = 0) -> Hfilemap {
+    guard f.is_valid() else { return Hfilemap {}; }
     return Hfilemap { id: shim_file_map_open(f.raw, writable, max_size) };
 }
 

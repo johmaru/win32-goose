@@ -84,6 +84,7 @@ fn main() {
             }
             status.set_title(str("Dropped ", cnt, " file(s)."));
         } else if ev.msg == win32::WM_CLOSE {
+            win.tray_remove(TRAY_ID);
             win.destroy();
         } else if ev.msg == win32::WM_DESTROY {
             win32::post_quit_message(0);

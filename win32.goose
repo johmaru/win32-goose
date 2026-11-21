@@ -100,15 +100,26 @@ fn create_window(
     guard shim_register_class(class_name, CS_HREDRAW | CS_VREDRAW | CS_OWNDC) else {
         return Hwnd {};
     }
-    var rc = Rect { left: 0, top: 0, right: client_width, bottom: client_height };
-    AdjustWindowRectEx(rc, style, 0, ex_style);
+    var win_w = client_width;
+    var win_h = client_height;
+    if client_width != CW_USEDEFAULT || client_height != CW_USEDEFAULT {
+        var rc = Rect {
+            left: 0,
+            top: 0,
+            right: if client_width == CW_USEDEFAULT { 0 } else { client_width },
+            bottom: if client_height == CW_USEDEFAULT { 0 } else { client_height },
+        };
+        AdjustWindowRectEx(rc, style, 0, ex_style);
+        if client_width != CW_USEDEFAULT { win_w = rc.right - rc.left; }
+        if client_height != CW_USEDEFAULT { win_h = rc.bottom - rc.top; }
+    }
     let raw_hwnd = shim_create_window(
         class_name,
         title,
         x,
         y,
-        rc.right - rc.left,
-        rc.bottom - rc.top,
+        win_w,
+        win_h,
         style,
         ex_style,
         parent.raw

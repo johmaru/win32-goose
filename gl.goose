@@ -147,6 +147,11 @@ fn update(m: GlMesh, verts: const D3dVertex[:]) {
     shim_gl_update_vertex_buffer(m.id, verts);
 }
 
+fn update_mesh(c: GlContext, m: GlMesh, verts: const D3dVertex[:]) {
+    c.make_current();
+    shim_gl_update_vertex_buffer(m.id, verts);
+}
+
 fn destroy(m: GlMesh) {
     shim_gl_destroy_vertex_buffer(m.id);
 }

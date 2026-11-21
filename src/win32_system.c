@@ -85,19 +85,32 @@ uint8_t w32_env_get(w32_bytes name, gs_rref out) {
         w32_wide_free(&wname);
         return 0;
     }
+    SetLastError(0);
     DWORD needed = GetEnvironmentVariableW(wname.ptr, NULL, 0);
     if (needed == 0) {
+        uint8_t ok = (GetLastError() == 0) ? 1 : 0;
         w32_wide_free(&wname);
-        return 0;
+        return ok;
     }
-    wchar_t *buf = (wchar_t *)malloc((size_t)needed * sizeof(wchar_t));
-    if (!buf) {
-        w32_wide_free(&wname);
-        return 0;
+    uint8_t ok = 0;
+    for (int attempt = 0; attempt < 4 && needed > 0; attempt++) {
+        wchar_t *buf = (wchar_t *)malloc((size_t)needed * sizeof(wchar_t));
+        if (!buf) break;
+        SetLastError(0);
+        DWORD got = GetEnvironmentVariableW(wname.ptr, buf, needed);
+        if (got == 0) {
+            ok = (GetLastError() == 0) ? 1 : 0;
+            free(buf);
+            break;
+        }
+        if (got < needed) {
+            ok = w32_append_wide_as_utf8(buf, (int)got, out);
+            free(buf);
+            break;
+        }
+        free(buf);
+        needed = got;
     }
-    DWORD got = GetEnvironmentVariableW(wname.ptr, buf, needed);
-    uint8_t ok = got > 0 ? w32_append_wide_as_utf8(buf, (int)got, out) : 1;
-    free(buf);
     w32_wide_free(&wname);
     return ok;
 }
@@ -185,25 +198,71 @@ uint8_t w32_run_process_capture(
     }
 
     uint8_t chunk[4096];
-    DWORD got = 0;
-    while (ReadFile(read_pipe, chunk, (DWORD)sizeof(chunk), &got, NULL) && got > 0) {
-        gs_bld_append(out_stdout, chunk, (int64_t)got);
+    uint64_t start_ms = GetTickCount64();
+    int timed_out = 0;
+
+    for (;;) {
+        DWORD avail = 0;
+        if (!PeekNamedPipe(read_pipe, NULL, 0, NULL, &avail, NULL)) {
+            break;
+        }
+        if (avail > 0) {
+            DWORD to_read = avail > sizeof(chunk) ? (DWORD)sizeof(chunk) : avail;
+            DWORD got = 0;
+            if (!ReadFile(read_pipe, chunk, to_read, &got, NULL) || got == 0) {
+                break;
+            }
+            gs_bld_append(out_stdout, chunk, (int64_t)got);
+            continue;
+        }
+
+        if (WaitForSingleObject(pi.hProcess, 0) == WAIT_OBJECT_0) {
+            /* Process exited; drain any remaining buffered pipe bytes without blocking. */
+            while (PeekNamedPipe(read_pipe, NULL, 0, NULL, &avail, NULL) && avail > 0) {
+                DWORD to_read = avail > sizeof(chunk) ? (DWORD)sizeof(chunk) : avail;
+                DWORD got = 0;
+                if (!ReadFile(read_pipe, chunk, to_read, &got, NULL) || got == 0) break;
+                gs_bld_append(out_stdout, chunk, (int64_t)got);
+            }
+            break;
+        }
+
+        DWORD wait_slice = 10;
+        if (timeout_ms != INFINITE) {
+            uint64_t elapsed = GetTickCount64() - start_ms;
+            if (elapsed >= (uint64_t)timeout_ms) {
+                timed_out = 1;
+                break;
+            }
+            uint64_t rem = (uint64_t)timeout_ms - elapsed;
+            if (rem < wait_slice) wait_slice = (DWORD)rem;
+        }
+        WaitForSingleObject(pi.hProcess, wait_slice);
     }
     CloseHandle(read_pipe);
 
-    DWORD wait_r = WaitForSingleObject(pi.hProcess, (DWORD)timeout_ms);
+    DWORD wait_r = WAIT_TIMEOUT;
     DWORD exit_code = 0;
+    if (!timed_out) {
+        DWORD rem_ms = INFINITE;
+        if (timeout_ms != INFINITE) {
+            uint64_t elapsed = GetTickCount64() - start_ms;
+            rem_ms = elapsed >= (uint64_t)timeout_ms ? 0 : (DWORD)((uint64_t)timeout_ms - elapsed);
+        }
+        wait_r = WaitForSingleObject(pi.hProcess, rem_ms);
+    }
     if (wait_r == WAIT_OBJECT_0) {
         GetExitCodeProcess(pi.hProcess, &exit_code);
     } else {
         TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, 1000);
         exit_code = 1;
     }
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
 
     if (out_exit_code) *out_exit_code = (uint32_t)exit_code;
-    return wait_r == WAIT_OBJECT_0 ? 1 : 0;
+    return (!timed_out && wait_r == WAIT_OBJECT_0) ? 1 : 0;
 }
 
 uint64_t w32_spawn_process(w32_bytes cmdline, w32_bytes working_dir, uint8_t hide_window) {
@@ -315,11 +374,16 @@ uint8_t w32_reg_get_string(uint64_t hkey, w32_bytes name, gs_rref out) {
     LSTATUS st = RegQueryValueExW(
         (HKEY)(uintptr_t)hkey, wname.len > 0 ? wname.ptr : NULL, NULL, &type, NULL, &cb
     );
-    if (st != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ) || cb == 0) {
+    if (st != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ)) {
         w32_wide_free(&wname);
         return 0;
     }
-    wchar_t *buf = (wchar_t *)malloc((size_t)cb + sizeof(wchar_t));
+    if (cb == 0) {
+        w32_wide_free(&wname);
+        return 1;
+    }
+    DWORD alloc_cb = cb;
+    wchar_t *buf = (wchar_t *)malloc((size_t)alloc_cb + sizeof(wchar_t));
     if (!buf) {
         w32_wide_free(&wname);
         return 0;
@@ -328,7 +392,7 @@ uint8_t w32_reg_get_string(uint64_t hkey, w32_bytes name, gs_rref out) {
         (HKEY)(uintptr_t)hkey, wname.len > 0 ? wname.ptr : NULL, NULL, &type, (BYTE *)buf, &cb
     );
     uint8_t ok = 0;
-    if (st == ERROR_SUCCESS) {
+    if (st == ERROR_SUCCESS && (type == REG_SZ || type == REG_EXPAND_SZ) && cb <= alloc_cb) {
         size_t wlen = cb / sizeof(wchar_t);
         buf[wlen] = L'\0';
         ok = w32_append_wide_as_utf8(buf, -1, out);

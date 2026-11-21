@@ -199,7 +199,17 @@ static int load_gl33_funcs(void) {
     g_glEnableVertexAttribArray = (pfn_glEnableVertexAttribArray)load_gl_proc("glEnableVertexAttribArray");
     g_glVertexAttribPointer     = (pfn_glVertexAttribPointer)load_gl_proc("glVertexAttribPointer");
 
-    if (g_glCreateShader && g_glCreateProgram && g_glGenVertexArrays && g_glGenBuffers) {
+    if (g_glCreateShader && g_glShaderSource && g_glCompileShader &&
+        g_glGetShaderiv && g_glGetShaderInfoLog && g_glDeleteShader &&
+        g_glCreateProgram && g_glAttachShader && g_glLinkProgram &&
+        g_glGetProgramiv && g_glGetProgramInfoLog && g_glDeleteProgram &&
+        g_glUseProgram && g_glGetUniformLocation &&
+        g_glUniform1i && g_glUniform1f && g_glUniform2f && g_glUniform4f &&
+        g_glActiveTexture &&
+        g_glGenVertexArrays && g_glBindVertexArray && g_glDeleteVertexArrays &&
+        g_glGenBuffers && g_glBindBuffer && g_glBufferData &&
+        g_glBufferSubData && g_glDeleteBuffers &&
+        g_glEnableVertexAttribArray && g_glVertexAttribPointer) {
         g_gl_funcs_loaded = 1;
         return 1;
     }
@@ -225,6 +235,7 @@ typedef struct {
     GLuint ebo;
     size_t byte_size;
     uint8_t dynamic;
+    uint8_t is_textured;
 } w32_gl_mesh;
 
 static w32_gl_ctx g_gl_ctxs[W32_MAX_GL_CTXS];
@@ -321,7 +332,12 @@ uint32_t w32_gl_create(uint64_t hwnd_u64, uint8_t vsync) {
         return 0;
     }
 
-    load_gl33_funcs();
+    if (!load_gl33_funcs()) {
+        wglMakeCurrent(NULL, NULL);
+        wglDeleteContext(hglrc);
+        ReleaseDC(hwnd, hdc);
+        return 0;
+    }
     if (g_wglSwapIntervalEXT) {
         g_wglSwapIntervalEXT(vsync ? 1 : 0);
     }
@@ -446,6 +462,11 @@ uint32_t w32_gl_create_program(w32_bytes vs_src, w32_bytes fs_src, gs_rref out_e
     }
 
     GLuint prog = g_glCreateProgram();
+    if (!prog) {
+        g_glDeleteShader(vs);
+        g_glDeleteShader(fs);
+        return 0;
+    }
     g_glAttachShader(prog, vs);
     g_glAttachShader(prog, fs);
     g_glLinkProgram(prog);
@@ -543,17 +564,20 @@ uint32_t w32_gl_create_vertex_buffer(w32_d3d_vertex_slice verts, uint8_t dynamic
     g_glBindVertexArray(0);
 
     w32_gl_mesh *m = &g_gl_meshes[slot];
+    memset(m, 0, sizeof(*m));
     m->used = 1;
     m->vao = vao;
     m->vbo = vbo;
+    m->ebo = 0;
     m->byte_size = bytes;
     m->dynamic = dynamic ? 1 : 0;
+    m->is_textured = 0;
     return (uint32_t)(slot + 1);
 }
 
 void w32_gl_update_vertex_buffer(uint32_t mesh_id, w32_d3d_vertex_slice verts) {
     w32_gl_mesh *m = get_mesh(mesh_id);
-    if (!m || !verts.data || verts.len <= 0) return;
+    if (!m || m->is_textured || !verts.data || verts.len <= 0) return;
     size_t bytes = (size_t)verts.len * sizeof(w32_d3d_vertex);
     g_glBindBuffer(GL_ARRAY_BUFFER, m->vbo);
     if (bytes <= m->byte_size) {
@@ -595,6 +619,9 @@ uint8_t w32_gl_readback_pixel(uint32_t ctx_id, int32_t x, int32_t y, uint32_t *o
     if (x < 0 || gl_y < 0 || x >= (rc.right - rc.left) || gl_y >= h) return 0;
 
     glFinish();
+    /* Drain any pre-existing GL errors so the check below reflects glReadPixels. */
+    while (glGetError() != GL_NO_ERROR) {}
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
     uint32_t px = 0;
     glReadPixels((GLint)x, (GLint)gl_y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, &px);
     *out_rgba = px;
@@ -646,12 +673,14 @@ uint32_t w32_gl_create_indexed_mesh(w32_tex_vertex_slice verts, w32_u32_slice in
     g_glBindVertexArray(0);
 
     w32_gl_mesh *m = &g_gl_meshes[slot];
+    memset(m, 0, sizeof(*m));
     m->used = 1;
     m->vao = vao;
     m->vbo = vbo;
     m->ebo = ebo;
     m->byte_size = vbytes;
     m->dynamic = dynamic ? 1 : 0;
+    m->is_textured = 1;
     return (uint32_t)(slot + 1);
 }
 

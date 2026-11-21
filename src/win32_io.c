@@ -261,25 +261,45 @@ uint8_t w32_remove_directory(w32_bytes path) {
 }
 
 uint8_t w32_get_temp_path(gs_rref out) {
-    DWORD needed = GetTempPathW(0, NULL);
-    if (needed == 0) return 0;
-    wchar_t *buf = (wchar_t *)malloc((size_t)(needed + 1) * sizeof(wchar_t));
-    if (!buf) return 0;
-    DWORD len = GetTempPathW(needed + 1, buf);
-    uint8_t ok = len > 0 ? w32_append_wide_as_utf8(buf, (int)len, out) : 0;
-    free(buf);
-    return ok;
+    DWORD cap = GetTempPathW(0, NULL);
+    for (int attempt = 0; attempt < 4 && cap > 0; attempt++) {
+        wchar_t *buf = (wchar_t *)malloc((size_t)(cap + 1) * sizeof(wchar_t));
+        if (!buf) return 0;
+        DWORD len = GetTempPathW(cap + 1, buf);
+        if (len == 0) {
+            free(buf);
+            return 0;
+        }
+        if (len < cap + 1) {
+            uint8_t ok = w32_append_wide_as_utf8(buf, (int)len, out);
+            free(buf);
+            return ok;
+        }
+        free(buf);
+        cap = len;
+    }
+    return 0;
 }
 
 uint8_t w32_get_current_directory(gs_rref out) {
-    DWORD needed = GetCurrentDirectoryW(0, NULL);
-    if (needed == 0) return 0;
-    wchar_t *buf = (wchar_t *)malloc((size_t)(needed + 1) * sizeof(wchar_t));
-    if (!buf) return 0;
-    DWORD len = GetCurrentDirectoryW(needed + 1, buf);
-    uint8_t ok = len > 0 ? w32_append_wide_as_utf8(buf, (int)len, out) : 0;
-    free(buf);
-    return ok;
+    DWORD cap = GetCurrentDirectoryW(0, NULL);
+    for (int attempt = 0; attempt < 4 && cap > 0; attempt++) {
+        wchar_t *buf = (wchar_t *)malloc((size_t)(cap + 1) * sizeof(wchar_t));
+        if (!buf) return 0;
+        DWORD len = GetCurrentDirectoryW(cap + 1, buf);
+        if (len == 0) {
+            free(buf);
+            return 0;
+        }
+        if (len < cap + 1) {
+            uint8_t ok = w32_append_wide_as_utf8(buf, (int)len, out);
+            free(buf);
+            return ok;
+        }
+        free(buf);
+        cap = len;
+    }
+    return 0;
 }
 
 uint8_t w32_get_full_path_name(w32_bytes path, gs_rref out) {
@@ -288,19 +308,24 @@ uint8_t w32_get_full_path_name(w32_bytes path, gs_rref out) {
         w32_wide_free(&wb);
         return 0;
     }
-    DWORD needed = GetFullPathNameW(wb.ptr, 0, NULL, NULL);
-    if (needed == 0) {
-        w32_wide_free(&wb);
-        return 0;
+    DWORD cap = GetFullPathNameW(wb.ptr, 0, NULL, NULL);
+    uint8_t ok = 0;
+    for (int attempt = 0; attempt < 4 && cap > 0; attempt++) {
+        wchar_t *buf = (wchar_t *)malloc((size_t)(cap + 1) * sizeof(wchar_t));
+        if (!buf) break;
+        DWORD len = GetFullPathNameW(wb.ptr, cap + 1, buf, NULL);
+        if (len == 0) {
+            free(buf);
+            break;
+        }
+        if (len < cap + 1) {
+            ok = w32_append_wide_as_utf8(buf, (int)len, out);
+            free(buf);
+            break;
+        }
+        free(buf);
+        cap = len;
     }
-    wchar_t *buf = (wchar_t *)malloc((size_t)(needed + 1) * sizeof(wchar_t));
-    if (!buf) {
-        w32_wide_free(&wb);
-        return 0;
-    }
-    DWORD len = GetFullPathNameW(wb.ptr, needed + 1, buf, NULL);
-    uint8_t ok = len > 0 ? w32_append_wide_as_utf8(buf, (int)len, out) : 0;
-    free(buf);
     w32_wide_free(&wb);
     return ok;
 }
@@ -396,7 +421,7 @@ static w32_file_map *get_file_map(uint32_t id) {
 }
 
 uint32_t w32_file_map_open(uint64_t hfile, uint8_t writable, uint64_t max_size) {
-    if (!hfile) return 0;
+    if (!hfile || hfile == (uint64_t)(uintptr_t)INVALID_HANDLE_VALUE) return 0;
     int slot = -1;
     for (int i = 0; i < W32_MAX_FILE_MAPS; i++) {
         if (!g_file_maps[i].used) { slot = i; break; }
@@ -406,9 +431,9 @@ uint32_t w32_file_map_open(uint64_t hfile, uint8_t writable, uint64_t max_size) 
     HANDLE hf = (HANDLE)(uintptr_t)hfile;
     LARGE_INTEGER fsz;
     fsz.QuadPart = 0;
-    GetFileSizeEx(hf, &fsz);
+    if (!GetFileSizeEx(hf, &fsz) && max_size == 0) return 0;
     uint64_t map_len = max_size > 0 ? max_size : (uint64_t)(fsz.QuadPart > 0 ? fsz.QuadPart : 0);
-    if (map_len == 0) return 0;
+    if (map_len == 0 || map_len > (uint64_t)INT64_MAX) return 0;
 
     DWORD protect = writable ? PAGE_READWRITE : PAGE_READONLY;
     DWORD access = writable ? FILE_MAP_ALL_ACCESS : FILE_MAP_READ;
@@ -460,7 +485,8 @@ int64_t w32_file_map_write(uint32_t map_id, int64_t offset, w32_bytes data) {
 uint8_t w32_file_map_flush(uint32_t map_id, int64_t offset, int64_t len) {
     w32_file_map *m = get_file_map(map_id);
     if (!m || offset < 0 || offset >= m->size) return 0;
-    SIZE_T n = (len > 0 && offset + len <= m->size) ? (SIZE_T)len : (SIZE_T)(m->size - offset);
+    int64_t rem = m->size - offset;
+    SIZE_T n = (len > 0 && len <= rem) ? (SIZE_T)len : (SIZE_T)rem;
     return FlushViewOfFile(m->view + offset, n) ? 1 : 0;
 }
 

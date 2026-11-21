@@ -5,9 +5,16 @@
 #include "win32_internal.h"
 #include <wincodec.h>
 
+static int g_wic_com_inited = 0;
+
 static int wic_ensure_com(void) {
+    if (g_wic_com_inited) return 1;
     HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
-    return SUCCEEDED(hr) || hr == RPC_E_CHANGED_MODE;
+    if (SUCCEEDED(hr) || hr == RPC_E_CHANGED_MODE) {
+        g_wic_com_inited = 1;
+        return 1;
+    }
+    return 0;
 }
 
 static uint8_t wic_load_fmt(
@@ -56,19 +63,21 @@ static uint8_t wic_load_fmt(
                     WICBitmapDitherTypeNone, NULL, 0.0, WICBitmapPaletteTypeCustom
                 );
                 if (SUCCEEDED(hr)) {
-                    size_t count = (size_t)w * (size_t)h;
-                    uint32_t *buf = (uint32_t *)malloc(count * sizeof(uint32_t));
-                    if (buf) {
-                        hr = IWICFormatConverter_CopyPixels(
-                            conv, NULL, (UINT)(w * 4), (UINT)(count * 4), (BYTE *)buf
-                        );
-                        if (SUCCEEDED(hr)) {
-                            w32_bld_append_u32(out_pixels_u32, buf, (int64_t)count);
-                            if (out_w) *out_w = (int32_t)w;
-                            if (out_h) *out_h = (int32_t)h;
-                            ok = 1;
+                    uint64_t count = (uint64_t)w * (uint64_t)h;
+                    if (w <= UINT32_MAX / 4u && count <= UINT32_MAX / 4u) {
+                        uint32_t *buf = (uint32_t *)malloc((size_t)count * sizeof(uint32_t));
+                        if (buf) {
+                            hr = IWICFormatConverter_CopyPixels(
+                                conv, NULL, (UINT)(w * 4u), (UINT)(count * 4u), (BYTE *)buf
+                            );
+                            if (SUCCEEDED(hr)) {
+                                w32_bld_append_u32(out_pixels_u32, buf, (int64_t)count);
+                                if (out_w) *out_w = (int32_t)w;
+                                if (out_h) *out_h = (int32_t)h;
+                                ok = 1;
+                            }
+                            free(buf);
                         }
-                        free(buf);
                     }
                 }
                 IWICFormatConverter_Release(conv);
@@ -98,7 +107,9 @@ static uint8_t wic_save_fmt(
     int32_t h
 ) {
     if (!wic_ensure_com() || !pixels_bgra.data || w <= 0 || h <= 0) return 0;
-    if (pixels_bgra.len < (int64_t)w * (int64_t)h) return 0;
+    uint64_t pixel_count = (uint64_t)w * (uint64_t)h;
+    if ((uint64_t)w > UINT32_MAX / 4u || pixel_count > UINT32_MAX / 4u) return 0;
+    if (pixels_bgra.len < (int64_t)pixel_count) return 0;
 
     w32_wide_buf wpath;
     if (!w32_wide_init(&wpath, path) || wpath.len == 0) {
@@ -129,8 +140,9 @@ static uint8_t wic_save_fmt(
                         if (SUCCEEDED(IWICBitmapFrameEncode_Initialize(frame, NULL)) &&
                             SUCCEEDED(IWICBitmapFrameEncode_SetSize(frame, (UINT)w, (UINT)h)) &&
                             SUCCEEDED(IWICBitmapFrameEncode_SetPixelFormat(frame, &pf)) &&
+                            IsEqualGUID(&pf, &GUID_WICPixelFormat32bppBGRA) &&
                             SUCCEEDED(IWICBitmapFrameEncode_WritePixels(
-                                frame, (UINT)h, (UINT)(w * 4), (UINT)((size_t)w * (size_t)h * 4),
+                                frame, (UINT)h, (UINT)((uint64_t)w * 4u), (UINT)(pixel_count * 4u),
                                 (BYTE *)pixels_bgra.data)) &&
                             SUCCEEDED(IWICBitmapFrameEncode_Commit(frame)) &&
                             SUCCEEDED(IWICBitmapEncoder_Commit(encoder))) {

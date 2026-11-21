@@ -208,11 +208,14 @@ uint64_t w32_udp_bind(w32_bytes host, uint16_t port) {
 }
 
 int64_t w32_udp_send_to(uint64_t sock, w32_bytes host, uint16_t port, w32_bytes data) {
-    if (!sock) return -1;
+    if (!sock || data.len < 0) return -1;
+    if (data.len > 0 && !data.data) return -1;
     struct sockaddr_in addr;
     if (!resolve_ipv4_addr(host, port, &addr)) return -1;
+    int chunk = data.len > 0x40000000LL ? 0x40000000 : (int)data.len;
+    const char *ptr = chunk > 0 ? (const char *)data.data : "";
     int n = sendto(
-        (SOCKET)sock, (const char *)data.data, (int)data.len, 0,
+        (SOCKET)sock, ptr, chunk, 0,
         (struct sockaddr *)&addr, sizeof(addr)
     );
     return n == SOCKET_ERROR ? -1 : (int64_t)n;
@@ -220,9 +223,10 @@ int64_t w32_udp_send_to(uint64_t sock, w32_bytes host, uint16_t port, w32_bytes 
 
 int64_t w32_udp_recv_from(uint64_t sock, w32_mut_bytes buf, gs_rref out_host, uint16_t *out_port) {
     if (!sock || !buf.data || buf.len <= 0) return -1;
+    int chunk = buf.len > 0x40000000LL ? 0x40000000 : (int)buf.len;
     struct sockaddr_in from;
     int from_len = sizeof(from);
-    int n = recvfrom((SOCKET)sock, (char *)buf.data, (int)buf.len, 0, (struct sockaddr *)&from, &from_len);
+    int n = recvfrom((SOCKET)sock, (char *)buf.data, chunk, 0, (struct sockaddr *)&from, &from_len);
     if (n == SOCKET_ERROR) return -1;
     char ip[INET_ADDRSTRLEN];
     if (inet_ntop(AF_INET, &from.sin_addr, ip, sizeof(ip))) {
@@ -263,10 +267,16 @@ uint8_t w32_http_request(
         w32_wide_free(&wmethod);
         return 0;
     }
-    w32_wide_init(&wctype, content_type);
+    if (!w32_wide_init(&wctype, content_type)) {
+        w32_wide_free(&wurl);
+        w32_wide_free(&wmethod);
+        return 0;
+    }
 
     wchar_t host[256];
     wchar_t path[2048];
+    host[0] = L'\0';
+    path[0] = L'\0';
     URL_COMPONENTS uc;
     memset(&uc, 0, sizeof(uc));
     uc.dwStructSize = sizeof(uc);
@@ -279,6 +289,9 @@ uint8_t w32_http_request(
     if (!WinHttpCrackUrl(wurl.ptr, (DWORD)wurl.len, 0, &uc)) {
         goto cleanup_bufs;
     }
+    /* Strip any URL fragment (#...) before sending the HTTP request target. */
+    wchar_t *frag = wcschr(path, L'#');
+    if (frag) *frag = L'\0';
 
     HINTERNET hSession = WinHttpOpen(
         L"win32-goose/1.0",
@@ -309,13 +322,21 @@ uint8_t w32_http_request(
         goto cleanup_bufs;
     }
 
-    wchar_t hdr_buf[512];
+    wchar_t *hdr_alloc = NULL;
     const wchar_t *headers = WINHTTP_NO_ADDITIONAL_HEADERS;
     DWORD hdr_len = 0;
     if (wctype.len > 0) {
-        int n = _snwprintf(hdr_buf, 512, L"Content-Type: %s\r\n", wctype.ptr);
-        if (n > 0 && n < 512) {
-            headers = hdr_buf;
+        size_t hdr_cap = (size_t)wctype.len + 20;
+        hdr_alloc = (wchar_t *)malloc(hdr_cap * sizeof(wchar_t));
+        if (!hdr_alloc) {
+            WinHttpCloseHandle(hRequest);
+            WinHttpCloseHandle(hConnect);
+            WinHttpCloseHandle(hSession);
+            goto cleanup_bufs;
+        }
+        int n = swprintf(hdr_alloc, hdr_cap, L"Content-Type: %ls\r\n", wctype.ptr);
+        if (n > 0) {
+            headers = hdr_alloc;
             hdr_len = (DWORD)n;
         }
     }
@@ -336,20 +357,31 @@ uint8_t w32_http_request(
         if (out_status) *out_status = (uint32_t)status;
 
         uint8_t chunk[8192];
+        uint8_t read_ok = 1;
         for (;;) {
             DWORD avail = 0;
-            if (!WinHttpQueryDataAvailable(hRequest, &avail) || avail == 0) break;
+            if (!WinHttpQueryDataAvailable(hRequest, &avail)) {
+                read_ok = 0;
+                break;
+            }
+            if (avail == 0) break;
             while (avail > 0) {
                 DWORD to_read = avail > sizeof(chunk) ? (DWORD)sizeof(chunk) : avail;
                 DWORD got = 0;
-                if (!WinHttpReadData(hRequest, chunk, to_read, &got) || got == 0) break;
+                if (!WinHttpReadData(hRequest, chunk, to_read, &got)) {
+                    read_ok = 0;
+                    break;
+                }
+                if (got == 0) break;
                 gs_bld_append(out_body, chunk, (int64_t)got);
                 avail -= got;
             }
+            if (!read_ok) break;
         }
-        ok = 1;
+        ok = read_ok;
     }
 
+    free(hdr_alloc);
     WinHttpCloseHandle(hRequest);
     WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
@@ -371,7 +403,8 @@ int32_t w32_socket_poll(uint64_t sock, uint8_t write_check, int32_t timeout_ms) 
     pfd.revents = 0;
     int r = WSAPoll(&pfd, 1, (INT)timeout_ms);
     if (r <= 0) return (int32_t)r;
-    if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) return 1;
+    if (pfd.revents & (POLLNVAL | POLLERR)) return -1;
+    if (pfd.revents & POLLHUP) return write_check ? -1 : 1;
     return (pfd.revents & pfd.events) ? 1 : 0;
 }
 
@@ -395,10 +428,16 @@ uint8_t w32_http_request_ex(
         w32_wide_free(&wmethod);
         return 0;
     }
-    w32_wide_init(&whdrs, headers_crlf);
+    if (!w32_wide_init(&whdrs, headers_crlf)) {
+        w32_wide_free(&wurl);
+        w32_wide_free(&wmethod);
+        return 0;
+    }
 
     wchar_t host[256];
     wchar_t path[2048];
+    host[0] = L'\0';
+    path[0] = L'\0';
     URL_COMPONENTS uc;
     memset(&uc, 0, sizeof(uc));
     uc.dwStructSize = sizeof(uc);
@@ -409,6 +448,8 @@ uint8_t w32_http_request_ex(
 
     uint8_t ok = 0;
     if (!WinHttpCrackUrl(wurl.ptr, (DWORD)wurl.len, 0, &uc)) goto done_ex;
+    wchar_t *frag = wcschr(path, L'#');
+    if (frag) *frag = L'\0';
 
     HINTERNET hSession = WinHttpOpen(
         L"win32-goose/1.0",
@@ -475,18 +516,28 @@ uint8_t w32_http_request_ex(
         }
 
         uint8_t chunk[8192];
+        uint8_t read_ok = 1;
         for (;;) {
             DWORD avail = 0;
-            if (!WinHttpQueryDataAvailable(hRequest, &avail) || avail == 0) break;
+            if (!WinHttpQueryDataAvailable(hRequest, &avail)) {
+                read_ok = 0;
+                break;
+            }
+            if (avail == 0) break;
             while (avail > 0) {
                 DWORD to_read = avail > sizeof(chunk) ? (DWORD)sizeof(chunk) : avail;
                 DWORD got = 0;
-                if (!WinHttpReadData(hRequest, chunk, to_read, &got) || got == 0) break;
+                if (!WinHttpReadData(hRequest, chunk, to_read, &got)) {
+                    read_ok = 0;
+                    break;
+                }
+                if (got == 0) break;
                 gs_bld_append(out_body, chunk, (int64_t)got);
                 avail -= got;
             }
+            if (!read_ok) break;
         }
-        ok = 1;
+        ok = read_ok;
     }
 
     WinHttpCloseHandle(hRequest);

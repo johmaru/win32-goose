@@ -39,8 +39,15 @@ uint8_t w32_open_file_dialog(
     if (!path_buf) return 0;
 
     w32_wide_buf wtitle, wext;
-    w32_wide_init(&wtitle, title);
-    w32_wide_init(&wext, default_ext);
+    if (!w32_wide_init(&wtitle, title)) {
+        free(path_buf);
+        return 0;
+    }
+    if (!w32_wide_init(&wext, default_ext)) {
+        w32_wide_free(&wtitle);
+        free(path_buf);
+        return 0;
+    }
     wchar_t *wfilter = w32_build_filter(filter);
 
     OPENFILENAMEW ofn;
@@ -79,9 +86,21 @@ uint8_t w32_save_file_dialog(
     if (!path_buf) return 0;
 
     w32_wide_buf wtitle, wext, winit;
-    w32_wide_init(&wtitle, title);
-    w32_wide_init(&wext, default_ext);
-    w32_wide_init(&winit, initial_name);
+    if (!w32_wide_init(&wtitle, title)) {
+        free(path_buf);
+        return 0;
+    }
+    if (!w32_wide_init(&wext, default_ext)) {
+        w32_wide_free(&wtitle);
+        free(path_buf);
+        return 0;
+    }
+    if (!w32_wide_init(&winit, initial_name)) {
+        w32_wide_free(&wext);
+        w32_wide_free(&wtitle);
+        free(path_buf);
+        return 0;
+    }
     if (winit.len > 0) {
         size_t copy_n = (size_t)winit.len;
         if (copy_n >= W32_PATH_BUF_CAP) copy_n = W32_PATH_BUF_CAP - 1;
@@ -307,6 +326,26 @@ static void dlg_item(
     dlg_u16(b, 0); /* no creation data */
 }
 
+static void build_input_dlg_template(w32_dlg_builder *b, const wchar_t *title) {
+    DLGTEMPLATE dt;
+    memset(&dt, 0, sizeof(dt));
+    dt.style = DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU;
+    dt.cdit = 4; /* static prompt, edit box, OK button, Cancel button */
+    dt.x = 0; dt.y = 0; dt.cx = 220; dt.cy = 78;
+    dlg_write(b, &dt, sizeof(dt));
+    dlg_u16(b, 0); /* no menu */
+    dlg_u16(b, 0); /* default dialog class */
+    dlg_wstr(b, title);
+    dlg_u16(b, 9); /* font size */
+    dlg_wstr(b, L"Segoe UI");
+
+    /* 0x0082 = Static, 0x0081 = Edit, 0x0080 = Button */
+    dlg_item(b, SS_LEFT, 10, 8, 200, 14, W32_IDC_PROMPT, 0x0082, L"");
+    dlg_item(b, ES_LEFT | ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, 10, 26, 200, 15, W32_IDC_EDIT, 0x0081, L"");
+    dlg_item(b, BS_DEFPUSHBUTTON | WS_TABSTOP, 104, 52, 50, 16, IDOK, 0x0080, L"OK");
+    dlg_item(b, BS_PUSHBUTTON | WS_TABSTOP, 160, 52, 50, 16, IDCANCEL, 0x0080, L"Cancel");
+}
+
 uint8_t w32_input_dialog(
     uint64_t owner,
     w32_bytes title,
@@ -315,31 +354,41 @@ uint8_t w32_input_dialog(
     gs_rref out_text
 ) {
     w32_wide_buf wtitle, wprompt, winit;
-    w32_wide_init(&wtitle, title);
-    w32_wide_init(&wprompt, prompt);
-    w32_wide_init(&winit, initial_text);
+    if (!w32_wide_init(&wtitle, title)) return 0;
+    if (!w32_wide_init(&wprompt, prompt)) {
+        w32_wide_free(&wtitle);
+        return 0;
+    }
+    if (!w32_wide_init(&winit, initial_text)) {
+        w32_wide_free(&wprompt);
+        w32_wide_free(&wtitle);
+        return 0;
+    }
 
-    uint8_t raw[2048];
-    memset(raw, 0, sizeof(raw));
-    w32_dlg_builder b = { raw, 0, sizeof(raw) };
+    const wchar_t *dlg_title = wtitle.len > 0 ? wtitle.ptr : L"Input";
 
-    DLGTEMPLATE dt;
-    memset(&dt, 0, sizeof(dt));
-    dt.style = DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU;
-    dt.cdit = 4; /* static prompt, edit box, OK button, Cancel button */
-    dt.x = 0; dt.y = 0; dt.cx = 220; dt.cy = 78;
-    dlg_write(&b, &dt, sizeof(dt));
-    dlg_u16(&b, 0); /* no menu */
-    dlg_u16(&b, 0); /* default dialog class */
-    dlg_wstr(&b, wtitle.len > 0 ? wtitle.ptr : L"Input");
-    dlg_u16(&b, 9); /* font size */
-    dlg_wstr(&b, L"Segoe UI");
+    /* Measure exact template size first, then allocate a DWORD-aligned buffer. */
+    w32_dlg_builder measure = { NULL, 0, 0 };
+    build_input_dlg_template(&measure, dlg_title);
 
-    /* 0x0082 = Static, 0x0081 = Edit, 0x0080 = Button */
-    dlg_item(&b, SS_LEFT, 10, 8, 200, 14, W32_IDC_PROMPT, 0x0082, L"");
-    dlg_item(&b, ES_LEFT | ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, 10, 26, 200, 15, W32_IDC_EDIT, 0x0081, L"");
-    dlg_item(&b, BS_DEFPUSHBUTTON | WS_TABSTOP, 104, 52, 50, 16, IDOK, 0x0080, L"OK");
-    dlg_item(&b, BS_PUSHBUTTON | WS_TABSTOP, 160, 52, 50, 16, IDCANCEL, 0x0080, L"Cancel");
+    /* calloc returns at least pointer-aligned memory, satisfying Win32's DWORD alignment requirement. */
+    uint8_t *raw = (uint8_t *)calloc(1, measure.len + 4);
+    if (!raw) {
+        w32_wide_free(&winit);
+        w32_wide_free(&wprompt);
+        w32_wide_free(&wtitle);
+        return 0;
+    }
+
+    w32_dlg_builder b = { raw, 0, measure.len };
+    build_input_dlg_template(&b, dlg_title);
+    if (b.len > b.cap) {
+        free(raw);
+        w32_wide_free(&winit);
+        w32_wide_free(&wprompt);
+        w32_wide_free(&wtitle);
+        return 0;
+    }
 
     w32_input_ctx ctx;
     memset(&ctx, 0, sizeof(ctx));
@@ -360,6 +409,7 @@ uint8_t w32_input_dialog(
     }
 
     free(ctx.result_buf);
+    free(raw);
     w32_wide_free(&winit);
     w32_wide_free(&wprompt);
     w32_wide_free(&wtitle);

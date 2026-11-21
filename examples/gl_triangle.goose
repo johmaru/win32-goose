@@ -61,10 +61,8 @@ fn main() {
 
     while running {
         while win32::poll_event(ev) {
-            if ev.msg == win32::WM_QUIT {
+            if ev.msg == win32::WM_QUIT || ev.msg == win32::WM_CLOSE {
                 running = false;
-            } else if ev.msg == win32::WM_CLOSE {
-                win.destroy();
             } else if ev.msg == win32::WM_DESTROY {
                 win32::post_quit_message(0);
             } else if ev.msg == win32::WM_KEYDOWN && ev.key == win32::VK_ESCAPE {
@@ -82,7 +80,7 @@ fn main() {
             verts[i].x = (cos(a) * 0.65 / aspect) as f32;
             verts[i].y = (sin(a) * 0.65) as f32;
         }
-        mesh.update(verts);
+        gl.update_mesh(mesh, verts);
 
         gl.begin_frame(0.06, 0.08, 0.13, 1.0);
         gl.use_program(prog);
@@ -95,4 +93,5 @@ fn main() {
     mesh.destroy();
     prog.destroy();
     gl.destroy();
+    win.destroy();
 }

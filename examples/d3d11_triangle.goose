@@ -61,10 +61,8 @@ fn main() {
 
     while running {
         while win32::poll_event(ev) {
-            if ev.msg == win32::WM_QUIT {
+            if ev.msg == win32::WM_QUIT || ev.msg == win32::WM_CLOSE {
                 running = false;
-            } else if ev.msg == win32::WM_CLOSE {
-                win.destroy();
             } else if ev.msg == win32::WM_DESTROY {
                 win32::post_quit_message(0);
             } else if ev.msg == win32::WM_SIZE && ev.width > 0 && ev.height > 0 {
@@ -96,4 +94,5 @@ fn main() {
     vbuf.destroy();
     pipe.destroy();
     dev.destroy();
+    win.destroy();
 }

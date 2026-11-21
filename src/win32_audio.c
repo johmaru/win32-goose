@@ -25,9 +25,16 @@ static const GUID W32_KSDATAFORMAT_SUBTYPE_IEEE_FLOAT =
 static const PROPERTYKEY W32_PKEY_Device_FriendlyName =
     { { 0xa45c254e, 0xdf1c, 0x4efd, { 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0 } }, 14 };
 
+static int g_audio_com_inited = 0;
+
 static int ensure_com(void) {
+    if (g_audio_com_inited) return 1;
     HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
-    return SUCCEEDED(hr) || hr == RPC_E_CHANGED_MODE;
+    if (SUCCEEDED(hr) || hr == RPC_E_CHANGED_MODE) {
+        g_audio_com_inited = 1;
+        return 1;
+    }
+    return 0;
 }
 
 static uint8_t read_device_friendly_name(IMMDevice *dev, gs_rref out) {
@@ -180,7 +187,12 @@ uint32_t w32_wasapi_open_default(w32_audio_format *out_fmt) {
     }
 
     UINT32 buf_frames = 0;
-    IAudioClient_GetBufferSize(client, &buf_frames);
+    hr = IAudioClient_GetBufferSize(client, &buf_frames);
+    if (FAILED(hr) || buf_frames == 0) {
+        IAudioClient_Release(client);
+        IMMDevice_Release(dev);
+        return 0;
+    }
 
     IAudioRenderClient *render = NULL;
     hr = IAudioClient_GetService(client, &W32_IID_IAudioRenderClient, (void **)&render);
@@ -281,12 +293,18 @@ void w32_wasapi_close(uint32_t audio_id) {
 
 /* ---- winmm PlaySound helpers --------------------------------------------- */
 
+static uint8_t *g_async_wav_buf = NULL;
+
 uint8_t w32_play_sound_file(w32_bytes path, uint8_t async_play) {
     w32_wide_buf wb;
     if (!w32_wide_init(&wb, path) || wb.len == 0) {
         w32_wide_free(&wb);
         return 0;
     }
+    PlaySoundW(NULL, NULL, 0);
+    free(g_async_wav_buf);
+    g_async_wav_buf = NULL;
+
     DWORD flags = SND_FILENAME | (async_play ? SND_ASYNC : SND_SYNC);
     BOOL ok = PlaySoundW(wb.ptr, NULL, flags);
     w32_wide_free(&wb);
@@ -295,12 +313,40 @@ uint8_t w32_play_sound_file(w32_bytes path, uint8_t async_play) {
 
 void w32_play_sound_stop(void) {
     PlaySoundW(NULL, NULL, 0);
+    free(g_async_wav_buf);
+    g_async_wav_buf = NULL;
 }
 
 uint8_t w32_play_wav_bytes(w32_bytes wav_bytes, uint8_t async_play) {
-    if (!wav_bytes.data || wav_bytes.len <= 0) return 0;
-    DWORD flags = SND_MEMORY | (async_play ? SND_ASYNC : SND_SYNC);
-    return PlaySoundW((LPCWSTR)wav_bytes.data, NULL, flags) ? 1 : 0;
+    if (!wav_bytes.data || wav_bytes.len < 44) return 0;
+    /* Basic RIFF/WAVE header & size validation so PlaySoundW never reads past the slice. */
+    if (memcmp(wav_bytes.data, "RIFF", 4) != 0 || memcmp(wav_bytes.data + 8, "WAVE", 4) != 0) {
+        return 0;
+    }
+    uint32_t riff_size = 0;
+    memcpy(&riff_size, wav_bytes.data + 4, sizeof(riff_size));
+    if ((uint64_t)riff_size + 8ull > (uint64_t)wav_bytes.len) {
+        return 0;
+    }
+
+    PlaySoundW(NULL, NULL, 0);
+    free(g_async_wav_buf);
+    g_async_wav_buf = NULL;
+
+    if (async_play) {
+        /* PlaySoundW(SND_MEMORY | SND_ASYNC) keeps reading the buffer until playback finishes. */
+        uint8_t *copy = (uint8_t *)malloc((size_t)wav_bytes.len);
+        if (!copy) return 0;
+        memcpy(copy, wav_bytes.data, (size_t)wav_bytes.len);
+        if (!PlaySoundW((LPCWSTR)copy, NULL, SND_MEMORY | SND_ASYNC)) {
+            free(copy);
+            return 0;
+        }
+        g_async_wav_buf = copy;
+        return 1;
+    }
+
+    return PlaySoundW((LPCWSTR)wav_bytes.data, NULL, SND_MEMORY | SND_SYNC) ? 1 : 0;
 }
 
 /* ---- WASAPI input enumeration & capture/loopback stream ------------------ */
@@ -436,7 +482,12 @@ uint32_t w32_wasapi_capture_open(uint8_t loopback, w32_audio_format *out_fmt) {
     }
 
     UINT32 buf_frames = 0;
-    IAudioClient_GetBufferSize(client, &buf_frames);
+    hr = IAudioClient_GetBufferSize(client, &buf_frames);
+    if (FAILED(hr) || buf_frames == 0) {
+        IAudioClient_Release(client);
+        IMMDevice_Release(dev);
+        return 0;
+    }
 
     IAudioCaptureClient *capture = NULL;
     hr = IAudioClient_GetService(client, &W32_IID_IAudioCaptureClient, (void **)&capture);
@@ -488,6 +539,7 @@ uint32_t w32_wasapi_capture_read_f32(uint32_t cap_id, gs_rref out_f32) {
             break;
         }
         int64_t nsamples = (int64_t)frames * (int64_t)c->channels;
+        int wrote = 0;
         if (nsamples > 0) {
             if ((flags & AUDCLNT_BUFFERFLAGS_SILENT) || !data) {
                 float zeros[256];
@@ -498,8 +550,10 @@ uint32_t w32_wasapi_capture_read_f32(uint32_t cap_id, gs_rref out_f32) {
                     w32_bld_append_f32(out_f32, zeros, chunk);
                     rem -= chunk;
                 }
+                wrote = 1;
             } else if (c->is_float && c->bits_per_sample == 32) {
                 w32_bld_append_f32(out_f32, (const float *)data, nsamples);
+                wrote = 1;
             } else if (c->bits_per_sample == 16) {
                 const int16_t *in16 = (const int16_t *)data;
                 float tmp[256];
@@ -512,10 +566,42 @@ uint32_t w32_wasapi_capture_read_f32(uint32_t cap_id, gs_rref out_f32) {
                     w32_bld_append_f32(out_f32, tmp, chunk);
                     i += chunk;
                 }
+                wrote = 1;
+            } else if (!c->is_float && c->bits_per_sample == 32) {
+                const int32_t *in32 = (const int32_t *)data;
+                float tmp[256];
+                int64_t i = 0;
+                while (i < nsamples) {
+                    int64_t chunk = (nsamples - i) > 256 ? 256 : (nsamples - i);
+                    for (int64_t j = 0; j < chunk; j++) {
+                        tmp[j] = (float)((double)in32[i + j] / 2147483648.0);
+                    }
+                    w32_bld_append_f32(out_f32, tmp, chunk);
+                    i += chunk;
+                }
+                wrote = 1;
+            } else if (!c->is_float && c->bits_per_sample == 24) {
+                float tmp[256];
+                int64_t i = 0;
+                while (i < nsamples) {
+                    int64_t chunk = (nsamples - i) > 256 ? 256 : (nsamples - i);
+                    for (int64_t j = 0; j < chunk; j++) {
+                        const uint8_t *p = data + (size_t)(i + j) * 3u;
+                        int32_t v = ((int32_t)p[0]) | ((int32_t)p[1] << 8) | ((int32_t)(int8_t)p[2] << 16);
+                        tmp[j] = (float)v / 8388608.0f;
+                    }
+                    w32_bld_append_f32(out_f32, tmp, chunk);
+                    i += chunk;
+                }
+                wrote = 1;
             }
         }
         IAudioCaptureClient_ReleaseBuffer(c->capture, frames);
-        total_frames += (uint32_t)frames;
+        if (wrote) {
+            total_frames += (uint32_t)frames;
+        } else if (nsamples > 0) {
+            break;
+        }
     }
     return total_frames;
 }

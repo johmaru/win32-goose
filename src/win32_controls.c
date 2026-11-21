@@ -173,10 +173,10 @@ int32_t w32_tab_add(uint64_t hwnd_u64, int32_t index, w32_bytes text) {
 
 uint8_t w32_statusbar_set_text(uint64_t hwnd_u64, int32_t part, w32_bytes text) {
     HWND hwnd = (HWND)(uintptr_t)hwnd_u64;
-    if (!hwnd || part < 0) return 0;
+    if (!hwnd || part < 0 || part > 255) return 0;
     w32_wide_buf wb;
     if (!w32_wide_init(&wb, text)) return 0;
-    LRESULT ok = SendMessageW(hwnd, SB_SETTEXTW, (WPARAM)(part & 0xFF), (LPARAM)wb.ptr);
+    LRESULT ok = SendMessageW(hwnd, SB_SETTEXTW, (WPARAM)part, (LPARAM)wb.ptr);
     w32_wide_free(&wb);
     return ok ? 1 : 0;
 }

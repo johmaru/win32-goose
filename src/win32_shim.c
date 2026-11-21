@@ -1,3 +1,4 @@
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -10,9 +11,10 @@ int w32_wide_init(w32_wide_buf *wb, w32_bytes s) {
     wb->len = 0;
     wb->stack[0] = L'\0';
     if (!s.data || s.len <= 0) return 1;
+    if (s.len > INT_MAX) return 0;
 
     int n = MultiByteToWideChar(CP_UTF8, 0, (const char *)s.data, (int)s.len, NULL, 0);
-    if (n <= 0) return 1;
+    if (n <= 0) return 0;
 
     if (n + 1 <= W32_STACK_WIDE_CAP) {
         wb->ptr = wb->stack;
@@ -101,6 +103,8 @@ static int32_t w32_hi_i16(LPARAM lp) {
     return (int32_t)(int16_t)((lp >> 16) & 0xFFFF);
 }
 
+static void w32_cleanup_window_state(HWND hwnd);
+
 static LRESULT CALLBACK w32_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     w32_event ev;
     memset(&ev, 0, sizeof(ev));
@@ -115,10 +119,16 @@ static LRESULT CALLBACK w32_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
 
         case WM_DESTROY:
+            w32_cleanup_window_state(hwnd);
             w32_queue_push(&ev);
             return 0;
 
         case WM_ERASEBKGND:
+            /* Preserve default background fill for parent windows hosting child controls;
+               suppress erase for custom-drawn / GPU windows to eliminate flicker. */
+            if (GetWindow(hwnd, GW_CHILD) != NULL) {
+                return DefWindowProcW(hwnd, msg, wp, lp);
+            }
             return 1;
 
         case WM_PAINT:
@@ -159,9 +169,12 @@ static LRESULT CALLBACK w32_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             UINT sz = 0;
             GetRawInputData((HRAWINPUT)lp, RID_INPUT, NULL, &sz, sizeof(RAWINPUTHEADER));
             if (sz > 0 && sz <= 256) {
-                uint8_t raw_buf[256];
-                if (GetRawInputData((HRAWINPUT)lp, RID_INPUT, raw_buf, &sz, sizeof(RAWINPUTHEADER)) == sz) {
-                    const RAWINPUT *ri = (const RAWINPUT *)raw_buf;
+                union {
+                    RAWINPUT ri;
+                    uint8_t bytes[256];
+                } raw_buf;
+                if (GetRawInputData((HRAWINPUT)lp, RID_INPUT, raw_buf.bytes, &sz, sizeof(RAWINPUTHEADER)) == sz) {
+                    const RAWINPUT *ri = &raw_buf.ri;
                     if (ri->header.dwType == RIM_TYPEMOUSE) {
                         ev.x = (int32_t)ri->data.mouse.lLastX;
                         ev.y = (int32_t)ri->data.mouse.lLastY;
@@ -213,9 +226,22 @@ static LRESULT CALLBACK w32_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_SETFOCUS:
         case WM_KILLFOCUS:
         case WM_TIMER:
-        case WM_DPICHANGED:
             w32_queue_push(&ev);
             return DefWindowProcW(hwnd, msg, wp, lp);
+
+        case WM_DPICHANGED: {
+            /* Copy DPI and suggested rect dimensions; do not queue dangling lParam RECT*. */
+            ev.x = (int32_t)(uint16_t)(wp & 0xFFFF);
+            ev.y = (int32_t)(uint16_t)((wp >> 16) & 0xFFFF);
+            if (lp) {
+                const RECT *suggested = (const RECT *)(uintptr_t)lp;
+                ev.width = (int32_t)(suggested->right - suggested->left);
+                ev.height = (int32_t)(suggested->bottom - suggested->top);
+            }
+            ev.lparam = 0;
+            w32_queue_push(&ev);
+            return DefWindowProcW(hwnd, msg, wp, lp);
+        }
 
         default:
             return DefWindowProcW(hwnd, msg, wp, lp);
@@ -544,6 +570,8 @@ uint8_t w32_unclip_cursor(void) {
     return ClipCursor(NULL) ? 1 : 0;
 }
 
+#define W32_MAX_FULLSCREEN 16
+
 typedef struct {
     HWND hwnd;
     DWORD saved_style;
@@ -551,17 +579,48 @@ typedef struct {
     int active;
 } w32_fullscreen_state;
 
-static w32_fullscreen_state g_fs;
+static w32_fullscreen_state g_fs[W32_MAX_FULLSCREEN];
+
+static void w32_cleanup_window_state(HWND hwnd) {
+    if (g_paint.active && g_paint.hwnd == hwnd) {
+        SelectObject(g_paint.mem_dc, g_paint.old_bmp);
+        DeleteObject(g_paint.bmp);
+        DeleteDC(g_paint.mem_dc);
+        ReleaseDC(g_paint.hwnd, g_paint.win_dc);
+        memset(&g_paint, 0, sizeof(g_paint));
+    }
+    for (int i = 0; i < W32_MAX_FULLSCREEN; i++) {
+        if (g_fs[i].active && g_fs[i].hwnd == hwnd) {
+            memset(&g_fs[i], 0, sizeof(g_fs[i]));
+        }
+    }
+}
 
 uint8_t w32_set_borderless_fullscreen(uint64_t hwnd_u64, uint8_t enable) {
     HWND hwnd = (HWND)(uintptr_t)hwnd_u64;
     if (!hwnd) return 0;
 
+    int idx = -1;
+    int free_idx = -1;
+    for (int i = 0; i < W32_MAX_FULLSCREEN; i++) {
+        if (g_fs[i].active && g_fs[i].hwnd == hwnd) {
+            idx = i;
+            break;
+        }
+        if (!g_fs[i].active && free_idx < 0) {
+            free_idx = i;
+        }
+    }
+
     if (enable) {
-        if (g_fs.active && g_fs.hwnd == hwnd) return 1;
-        g_fs.saved_style = (DWORD)GetWindowLongPtrW(hwnd, GWL_STYLE);
-        g_fs.saved_placement.length = sizeof(WINDOWPLACEMENT);
-        GetWindowPlacement(hwnd, &g_fs.saved_placement);
+        if (idx >= 0) return 1;
+        if (free_idx < 0) return 0;
+
+        w32_fullscreen_state st;
+        memset(&st, 0, sizeof(st));
+        st.saved_style = (DWORD)GetWindowLongPtrW(hwnd, GWL_STYLE);
+        st.saved_placement.length = sizeof(WINDOWPLACEMENT);
+        GetWindowPlacement(hwnd, &st.saved_placement);
 
         MONITORINFO mi;
         memset(&mi, 0, sizeof(mi));
@@ -569,7 +628,7 @@ uint8_t w32_set_borderless_fullscreen(uint64_t hwnd_u64, uint8_t enable) {
         HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
         if (!GetMonitorInfoW(mon, &mi)) return 0;
 
-        SetWindowLongPtrW(hwnd, GWL_STYLE, (LONG_PTR)(g_fs.saved_style & ~WS_OVERLAPPEDWINDOW));
+        SetWindowLongPtrW(hwnd, GWL_STYLE, (LONG_PTR)(st.saved_style & ~WS_OVERLAPPEDWINDOW));
         SetWindowPos(
             hwnd, HWND_TOP,
             mi.rcMonitor.left, mi.rcMonitor.top,
@@ -577,18 +636,19 @@ uint8_t w32_set_borderless_fullscreen(uint64_t hwnd_u64, uint8_t enable) {
             mi.rcMonitor.bottom - mi.rcMonitor.top,
             SWP_NOOWNERZORDER | SWP_FRAMECHANGED
         );
-        g_fs.hwnd = hwnd;
-        g_fs.active = 1;
+        st.hwnd = hwnd;
+        st.active = 1;
+        g_fs[free_idx] = st;
         return 1;
     } else {
-        if (!g_fs.active || g_fs.hwnd != hwnd) return 1;
-        SetWindowLongPtrW(hwnd, GWL_STYLE, (LONG_PTR)g_fs.saved_style);
-        SetWindowPlacement(hwnd, &g_fs.saved_placement);
+        if (idx < 0) return 1;
+        SetWindowLongPtrW(hwnd, GWL_STYLE, (LONG_PTR)g_fs[idx].saved_style);
+        SetWindowPlacement(hwnd, &g_fs[idx].saved_placement);
         SetWindowPos(
             hwnd, NULL, 0, 0, 0, 0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED
         );
-        memset(&g_fs, 0, sizeof(g_fs));
+        memset(&g_fs[idx], 0, sizeof(g_fs[idx]));
         return 1;
     }
 }

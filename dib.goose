@@ -66,16 +66,26 @@ fn put_pixel(pixels: u32[:], w: i32, h: i32, x: i32, y: i32, color: u32) {
 }
 
 fn fill_pixel_rect(pixels: u32[:], w: i32, h: i32, x0: i32, y0: i32, rw: i32, rh: i32, color: u32) {
-    let min_x = if x0 < 0 { 0 } else { x0 };
-    let min_y = if y0 < 0 { 0 } else { y0 };
-    let max_x = if x0 + rw > w { w } else { x0 + rw };
-    let max_y = if y0 + rh > h { h } else { y0 + rh };
+    if w <= 0 || h <= 0 || rw <= 0 || rh <= 0 { return; }
+    let w64: i64 = w;
+    let h64: i64 = h;
+    let x0_64: i64 = x0;
+    let y0_64: i64 = y0;
+    let x1_64: i64 = x0_64 + rw;
+    let y1_64: i64 = y0_64 + rh;
+    let min_x: i64 = if x0_64 < 0 { 0 } else { x0_64 };
+    let min_y: i64 = if y0_64 < 0 { 0 } else { y0_64 };
+    let max_x: i64 = if x1_64 > w64 { w64 } else { x1_64 };
+    let max_y: i64 = if y1_64 > h64 { h64 } else { y1_64 };
     var y = min_y;
     while y < max_y {
-        let row: i64 = (y as i64) * w;
+        let row = y * w64;
         var x = min_x;
         while x < max_x {
-            pixels[row + x] = color;
+            let idx = row + x;
+            if idx < pixels.len {
+                pixels[idx] = color;
+            }
             x += 1;
         }
         y += 1;
@@ -83,21 +93,30 @@ fn fill_pixel_rect(pixels: u32[:], w: i32, h: i32, x0: i32, y0: i32, rw: i32, rh
 }
 
 fn fill_pixel_circle(pixels: u32[:], w: i32, h: i32, cx: i32, cy: i32, radius: i32, color: u32) {
-    if radius <= 0 { return; }
-    let r2 = radius * radius;
-    let min_y = if cy - radius < 0 { 0 } else { cy - radius };
-    let max_y = if cy + radius >= h { h - 1 } else { cy + radius };
-    let min_x = if cx - radius < 0 { 0 } else { cx - radius };
-    let max_x = if cx + radius >= w { w - 1 } else { cx + radius };
+    if w <= 0 || h <= 0 || radius <= 0 { return; }
+    let w64: i64 = w;
+    let h64: i64 = h;
+    let cx64: i64 = cx;
+    let cy64: i64 = cy;
+    let r64: i64 = radius;
+    let r2: i64 = r64 * r64;
+    let min_y: i64 = if cy64 - r64 < 0 { 0 } else { cy64 - r64 };
+    let max_y: i64 = if cy64 + r64 >= h64 { h64 - 1 } else { cy64 + r64 };
+    let min_x: i64 = if cx64 - r64 < 0 { 0 } else { cx64 - r64 };
+    let max_x: i64 = if cx64 + r64 >= w64 { w64 - 1 } else { cx64 + r64 };
     var y = min_y;
     while y <= max_y {
-        let dy = y - cy;
-        let row: i64 = (y as i64) * w;
+        let dy = y - cy64;
+        let dy2 = dy * dy;
+        let row = y * w64;
         var x = min_x;
         while x <= max_x {
-            let dx = x - cx;
-            if dx * dx + dy * dy <= r2 {
-                pixels[row + x] = color;
+            let dx = x - cx64;
+            if dx * dx + dy2 <= r2 {
+                let idx = row + x;
+                if idx < pixels.len {
+                    pixels[idx] = color;
+                }
             }
             x += 1;
         }

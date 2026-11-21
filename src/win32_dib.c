@@ -38,7 +38,7 @@ uint8_t w32_blit_pixels(
         DIB_RGB_COLORS,
         SRCCOPY
     );
-    return lines != 0 && lines != GDI_ERROR ? 1 : 0;
+    return lines != 0 && lines != (int)GDI_ERROR ? 1 : 0;
 }
 
 uint8_t w32_present_pixels(uint64_t hwnd_u64, w32_u32_slice pixels, int32_t src_w, int32_t src_h) {
