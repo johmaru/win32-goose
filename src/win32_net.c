@@ -12,21 +12,203 @@
 
 #include "win32_internal.h"
 
+/* ---- Byte-order & fd_set helpers (avoid ws2_32 imports) ------------------ */
+
+static uint16_t w32_bswap16(uint16_t v) {
+    return (uint16_t)((v >> 8) | (v << 8));
+}
+
+static uint32_t w32_bswap32(uint32_t v) {
+    return ((v & 0x000000FFu) << 24) |
+           ((v & 0x0000FF00u) << 8)  |
+           ((v & 0x00FF0000u) >> 8)  |
+           ((v & 0xFF000000u) >> 24);
+}
+
+static int w32_fd_isset(SOCKET s, const fd_set *set) {
+    for (u_int i = 0; i < set->fd_count; i++) {
+        if (set->fd_array[i] == s) return 1;
+    }
+    return 0;
+}
+
+/* ---- Lazy Winsock2 table (ws2_32.dll) ------------------------------------ */
+
+typedef int    (WSAAPI *pfn_WSAStartup)(WORD, LPWSADATA);
+typedef int    (WSAAPI *pfn_WSACleanup)(void);
+typedef int    (WSAAPI *pfn_inet_pton)(INT, PCSTR, PVOID);
+typedef PCSTR  (WSAAPI *pfn_inet_ntop)(INT, const void *, PSTR, size_t);
+typedef int    (WSAAPI *pfn_getaddrinfo)(PCSTR, PCSTR, const struct addrinfo *, struct addrinfo **);
+typedef void   (WSAAPI *pfn_freeaddrinfo)(struct addrinfo *);
+typedef SOCKET (WSAAPI *pfn_socket)(int, int, int);
+typedef int    (WSAAPI *pfn_setsockopt)(SOCKET, int, int, const char *, int);
+typedef int    (WSAAPI *pfn_getsockopt)(SOCKET, int, int, char *, int *);
+typedef int    (WSAAPI *pfn_bind)(SOCKET, const struct sockaddr *, int);
+typedef int    (WSAAPI *pfn_listen)(SOCKET, int);
+typedef int    (WSAAPI *pfn_getsockname)(SOCKET, struct sockaddr *, int *);
+typedef SOCKET (WSAAPI *pfn_accept)(SOCKET, struct sockaddr *, int *);
+typedef int    (WSAAPI *pfn_ioctlsocket)(SOCKET, long, u_long *);
+typedef int    (WSAAPI *pfn_connect)(SOCKET, const struct sockaddr *, int);
+typedef int    (WSAAPI *pfn_WSAGetLastError)(void);
+typedef int    (WSAAPI *pfn_select)(int, fd_set *, fd_set *, fd_set *, const struct timeval *);
+typedef int    (WSAAPI *pfn_send)(SOCKET, const char *, int, int);
+typedef int    (WSAAPI *pfn_recv)(SOCKET, char *, int, int);
+typedef int    (WSAAPI *pfn_shutdown)(SOCKET, int);
+typedef int    (WSAAPI *pfn_closesocket)(SOCKET);
+typedef int    (WSAAPI *pfn_sendto)(SOCKET, const char *, int, int, const struct sockaddr *, int);
+typedef int    (WSAAPI *pfn_recvfrom)(SOCKET, char *, int, int, struct sockaddr *, int *);
+typedef int    (WSAAPI *pfn_WSAPoll)(LPWSAPOLLFD, ULONG, INT);
+
+static struct {
+    int tried;
+    int loaded;
+    HMODULE mod;
+    pfn_WSAStartup      WSAStartup;
+    pfn_WSACleanup      WSACleanup;
+    pfn_inet_pton       inet_pton;
+    pfn_inet_ntop       inet_ntop;
+    pfn_getaddrinfo     getaddrinfo;
+    pfn_freeaddrinfo    freeaddrinfo;
+    pfn_socket          socket;
+    pfn_setsockopt      setsockopt;
+    pfn_getsockopt      getsockopt;
+    pfn_bind            bind;
+    pfn_listen          listen;
+    pfn_getsockname     getsockname;
+    pfn_accept          accept;
+    pfn_ioctlsocket     ioctlsocket;
+    pfn_connect         connect;
+    pfn_WSAGetLastError WSAGetLastError;
+    pfn_select          select;
+    pfn_send            send;
+    pfn_recv            recv;
+    pfn_shutdown        shutdown;
+    pfn_closesocket     closesocket;
+    pfn_sendto          sendto;
+    pfn_recvfrom        recvfrom;
+    pfn_WSAPoll         WSAPoll;
+} g_wsa;
+
+static int ensure_ws2(void) {
+    if (g_wsa.loaded) return 1;
+    if (g_wsa.tried) return 0;
+    g_wsa.tried = 1;
+    g_wsa.mod = LoadLibraryW(L"ws2_32.dll");
+    if (!g_wsa.mod) return 0;
+
+    g_wsa.WSAStartup      = (pfn_WSAStartup)(uintptr_t)GetProcAddress(g_wsa.mod, "WSAStartup");
+    g_wsa.WSACleanup      = (pfn_WSACleanup)(uintptr_t)GetProcAddress(g_wsa.mod, "WSACleanup");
+    g_wsa.inet_pton       = (pfn_inet_pton)(uintptr_t)GetProcAddress(g_wsa.mod, "inet_pton");
+    g_wsa.inet_ntop       = (pfn_inet_ntop)(uintptr_t)GetProcAddress(g_wsa.mod, "inet_ntop");
+    g_wsa.getaddrinfo     = (pfn_getaddrinfo)(uintptr_t)GetProcAddress(g_wsa.mod, "getaddrinfo");
+    g_wsa.freeaddrinfo    = (pfn_freeaddrinfo)(uintptr_t)GetProcAddress(g_wsa.mod, "freeaddrinfo");
+    g_wsa.socket          = (pfn_socket)(uintptr_t)GetProcAddress(g_wsa.mod, "socket");
+    g_wsa.setsockopt      = (pfn_setsockopt)(uintptr_t)GetProcAddress(g_wsa.mod, "setsockopt");
+    g_wsa.getsockopt      = (pfn_getsockopt)(uintptr_t)GetProcAddress(g_wsa.mod, "getsockopt");
+    g_wsa.bind            = (pfn_bind)(uintptr_t)GetProcAddress(g_wsa.mod, "bind");
+    g_wsa.listen          = (pfn_listen)(uintptr_t)GetProcAddress(g_wsa.mod, "listen");
+    g_wsa.getsockname     = (pfn_getsockname)(uintptr_t)GetProcAddress(g_wsa.mod, "getsockname");
+    g_wsa.accept          = (pfn_accept)(uintptr_t)GetProcAddress(g_wsa.mod, "accept");
+    g_wsa.ioctlsocket     = (pfn_ioctlsocket)(uintptr_t)GetProcAddress(g_wsa.mod, "ioctlsocket");
+    g_wsa.connect         = (pfn_connect)(uintptr_t)GetProcAddress(g_wsa.mod, "connect");
+    g_wsa.WSAGetLastError = (pfn_WSAGetLastError)(uintptr_t)GetProcAddress(g_wsa.mod, "WSAGetLastError");
+    g_wsa.select          = (pfn_select)(uintptr_t)GetProcAddress(g_wsa.mod, "select");
+    g_wsa.send            = (pfn_send)(uintptr_t)GetProcAddress(g_wsa.mod, "send");
+    g_wsa.recv            = (pfn_recv)(uintptr_t)GetProcAddress(g_wsa.mod, "recv");
+    g_wsa.shutdown        = (pfn_shutdown)(uintptr_t)GetProcAddress(g_wsa.mod, "shutdown");
+    g_wsa.closesocket     = (pfn_closesocket)(uintptr_t)GetProcAddress(g_wsa.mod, "closesocket");
+    g_wsa.sendto          = (pfn_sendto)(uintptr_t)GetProcAddress(g_wsa.mod, "sendto");
+    g_wsa.recvfrom        = (pfn_recvfrom)(uintptr_t)GetProcAddress(g_wsa.mod, "recvfrom");
+    g_wsa.WSAPoll         = (pfn_WSAPoll)(uintptr_t)GetProcAddress(g_wsa.mod, "WSAPoll");
+
+    if (g_wsa.WSAStartup && g_wsa.WSACleanup && g_wsa.inet_pton && g_wsa.inet_ntop &&
+        g_wsa.getaddrinfo && g_wsa.freeaddrinfo && g_wsa.socket && g_wsa.setsockopt &&
+        g_wsa.getsockopt && g_wsa.bind && g_wsa.listen && g_wsa.getsockname &&
+        g_wsa.accept && g_wsa.ioctlsocket && g_wsa.connect && g_wsa.WSAGetLastError &&
+        g_wsa.select && g_wsa.send && g_wsa.recv && g_wsa.shutdown &&
+        g_wsa.closesocket && g_wsa.sendto && g_wsa.recvfrom && g_wsa.WSAPoll) {
+        g_wsa.loaded = 1;
+        return 1;
+    }
+    return 0;
+}
+
+/* ---- Lazy WinHTTP table (winhttp.dll) ------------------------------------ */
+
+typedef BOOL      (WINAPI *pfn_WinHttpCrackUrl)(LPCWSTR, DWORD, DWORD, LPURL_COMPONENTS);
+typedef HINTERNET (WINAPI *pfn_WinHttpOpen)(LPCWSTR, DWORD, LPCWSTR, LPCWSTR, DWORD);
+typedef BOOL      (WINAPI *pfn_WinHttpSetTimeouts)(HINTERNET, int, int, int, int);
+typedef HINTERNET (WINAPI *pfn_WinHttpConnect)(HINTERNET, LPCWSTR, INTERNET_PORT, DWORD);
+typedef HINTERNET (WINAPI *pfn_WinHttpOpenRequest)(HINTERNET, LPCWSTR, LPCWSTR, LPCWSTR, LPCWSTR, LPCWSTR *, DWORD);
+typedef BOOL      (WINAPI *pfn_WinHttpSendRequest)(HINTERNET, LPCWSTR, DWORD, LPVOID, DWORD, DWORD, DWORD_PTR);
+typedef BOOL      (WINAPI *pfn_WinHttpReceiveResponse)(HINTERNET, LPVOID);
+typedef BOOL      (WINAPI *pfn_WinHttpQueryHeaders)(HINTERNET, DWORD, LPCWSTR, LPVOID, LPDWORD, LPDWORD);
+typedef BOOL      (WINAPI *pfn_WinHttpQueryDataAvailable)(HINTERNET, LPDWORD);
+typedef BOOL      (WINAPI *pfn_WinHttpReadData)(HINTERNET, LPVOID, DWORD, LPDWORD);
+typedef BOOL      (WINAPI *pfn_WinHttpCloseHandle)(HINTERNET);
+
+static struct {
+    int tried;
+    int loaded;
+    HMODULE mod;
+    pfn_WinHttpCrackUrl           CrackUrl;
+    pfn_WinHttpOpen               Open;
+    pfn_WinHttpSetTimeouts        SetTimeouts;
+    pfn_WinHttpConnect            Connect;
+    pfn_WinHttpOpenRequest        OpenRequest;
+    pfn_WinHttpSendRequest        SendRequest;
+    pfn_WinHttpReceiveResponse    ReceiveResponse;
+    pfn_WinHttpQueryHeaders       QueryHeaders;
+    pfn_WinHttpQueryDataAvailable QueryDataAvailable;
+    pfn_WinHttpReadData           ReadData;
+    pfn_WinHttpCloseHandle        CloseHandle;
+} g_http;
+
+static int ensure_winhttp(void) {
+    if (g_http.loaded) return 1;
+    if (g_http.tried) return 0;
+    g_http.tried = 1;
+    g_http.mod = LoadLibraryW(L"winhttp.dll");
+    if (!g_http.mod) return 0;
+
+    g_http.CrackUrl           = (pfn_WinHttpCrackUrl)(uintptr_t)GetProcAddress(g_http.mod, "WinHttpCrackUrl");
+    g_http.Open               = (pfn_WinHttpOpen)(uintptr_t)GetProcAddress(g_http.mod, "WinHttpOpen");
+    g_http.SetTimeouts        = (pfn_WinHttpSetTimeouts)(uintptr_t)GetProcAddress(g_http.mod, "WinHttpSetTimeouts");
+    g_http.Connect            = (pfn_WinHttpConnect)(uintptr_t)GetProcAddress(g_http.mod, "WinHttpConnect");
+    g_http.OpenRequest        = (pfn_WinHttpOpenRequest)(uintptr_t)GetProcAddress(g_http.mod, "WinHttpOpenRequest");
+    g_http.SendRequest        = (pfn_WinHttpSendRequest)(uintptr_t)GetProcAddress(g_http.mod, "WinHttpSendRequest");
+    g_http.ReceiveResponse    = (pfn_WinHttpReceiveResponse)(uintptr_t)GetProcAddress(g_http.mod, "WinHttpReceiveResponse");
+    g_http.QueryHeaders       = (pfn_WinHttpQueryHeaders)(uintptr_t)GetProcAddress(g_http.mod, "WinHttpQueryHeaders");
+    g_http.QueryDataAvailable = (pfn_WinHttpQueryDataAvailable)(uintptr_t)GetProcAddress(g_http.mod, "WinHttpQueryDataAvailable");
+    g_http.ReadData           = (pfn_WinHttpReadData)(uintptr_t)GetProcAddress(g_http.mod, "WinHttpReadData");
+    g_http.CloseHandle        = (pfn_WinHttpCloseHandle)(uintptr_t)GetProcAddress(g_http.mod, "WinHttpCloseHandle");
+
+    if (g_http.CrackUrl && g_http.Open && g_http.SetTimeouts && g_http.Connect &&
+        g_http.OpenRequest && g_http.SendRequest && g_http.ReceiveResponse &&
+        g_http.QueryHeaders && g_http.QueryDataAvailable && g_http.ReadData &&
+        g_http.CloseHandle) {
+        g_http.loaded = 1;
+        return 1;
+    }
+    return 0;
+}
+
 /* ---- Winsock2 lifecycle -------------------------------------------------- */
 
 static int g_wsa_started = 0;
 
 uint8_t w32_net_init(void) {
     if (g_wsa_started) return 1;
+    if (!ensure_ws2()) return 0;
     WSADATA wsa;
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return 0;
+    if (g_wsa.WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return 0;
     g_wsa_started = 1;
     return 1;
 }
 
 void w32_net_cleanup(void) {
     if (!g_wsa_started) return;
-    WSACleanup();
+    if (g_wsa.WSACleanup) g_wsa.WSACleanup();
     g_wsa_started = 0;
 }
 
@@ -42,15 +224,16 @@ static char *net_cstr(w32_bytes s) {
 static int resolve_ipv4_addr(w32_bytes host, uint16_t port, struct sockaddr_in *out) {
     memset(out, 0, sizeof(*out));
     out->sin_family = AF_INET;
-    out->sin_port = htons(port);
+    out->sin_port = w32_bswap16(port);
     if (!host.data || host.len <= 0) {
-        out->sin_addr.s_addr = htonl(INADDR_ANY);
+        out->sin_addr.s_addr = w32_bswap32(INADDR_ANY);
         return 1;
     }
+    if (!ensure_ws2()) return 0;
     char *chost = net_cstr(host);
     if (!chost) return 0;
 
-    if (inet_pton(AF_INET, chost, &out->sin_addr) == 1) {
+    if (g_wsa.inet_pton(AF_INET, chost, &out->sin_addr) == 1) {
         free(chost);
         return 1;
     }
@@ -59,13 +242,13 @@ static int resolve_ipv4_addr(w32_bytes host, uint16_t port, struct sockaddr_in *
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_INET;
     struct addrinfo *res = NULL;
-    int rc = getaddrinfo(chost, NULL, &hints, &res);
+    int rc = g_wsa.getaddrinfo(chost, NULL, &hints, &res);
     free(chost);
     if (rc != 0 || !res) return 0;
 
     struct sockaddr_in *sin = (struct sockaddr_in *)res->ai_addr;
     out->sin_addr = sin->sin_addr;
-    freeaddrinfo(res);
+    g_wsa.freeaddrinfo(res);
     return 1;
 }
 
@@ -76,33 +259,33 @@ uint64_t w32_tcp_listen(w32_bytes host, uint16_t port, int32_t backlog) {
     struct sockaddr_in addr;
     if (!resolve_ipv4_addr(host, port, &addr)) return 0;
 
-    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    SOCKET s = g_wsa.socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (s == INVALID_SOCKET) return 0;
 
     BOOL reuse = TRUE;
-    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&reuse, sizeof(reuse));
-    if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR) {
-        closesocket(s);
+    g_wsa.setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&reuse, sizeof(reuse));
+    if (g_wsa.bind(s, (struct sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR) {
+        g_wsa.closesocket(s);
         return 0;
     }
-    if (listen(s, backlog > 0 ? (int)backlog : SOMAXCONN) == SOCKET_ERROR) {
-        closesocket(s);
+    if (g_wsa.listen(s, backlog > 0 ? (int)backlog : SOMAXCONN) == SOCKET_ERROR) {
+        g_wsa.closesocket(s);
         return 0;
     }
     return (uint64_t)s;
 }
 
 uint16_t w32_socket_local_port(uint64_t sock) {
-    if (!sock) return 0;
+    if (!sock || !ensure_ws2()) return 0;
     struct sockaddr_in addr;
     int len = sizeof(addr);
-    if (getsockname((SOCKET)sock, (struct sockaddr *)&addr, &len) == SOCKET_ERROR) return 0;
-    return ntohs(addr.sin_port);
+    if (g_wsa.getsockname((SOCKET)sock, (struct sockaddr *)&addr, &len) == SOCKET_ERROR) return 0;
+    return w32_bswap16(addr.sin_port);
 }
 
 uint64_t w32_tcp_accept(uint64_t listen_sock) {
-    if (!listen_sock) return 0;
-    SOCKET c = accept((SOCKET)listen_sock, NULL, NULL);
+    if (!listen_sock || !ensure_ws2()) return 0;
+    SOCKET c = g_wsa.accept((SOCKET)listen_sock, NULL, NULL);
     return c == INVALID_SOCKET ? 0 : (uint64_t)c;
 }
 
@@ -111,17 +294,17 @@ uint64_t w32_tcp_connect(w32_bytes host, uint16_t port, uint32_t timeout_ms) {
     struct sockaddr_in addr;
     if (!resolve_ipv4_addr(host, port, &addr)) return 0;
 
-    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    SOCKET s = g_wsa.socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (s == INVALID_SOCKET) return 0;
 
     if (timeout_ms > 0) {
         u_long nb = 1;
-        ioctlsocket(s, FIONBIO, &nb);
-        int rc = connect(s, (struct sockaddr *)&addr, sizeof(addr));
+        g_wsa.ioctlsocket(s, FIONBIO, &nb);
+        int rc = g_wsa.connect(s, (struct sockaddr *)&addr, sizeof(addr));
         if (rc == SOCKET_ERROR) {
-            int err = WSAGetLastError();
+            int err = g_wsa.WSAGetLastError();
             if (err != WSAEWOULDBLOCK && err != WSAEINPROGRESS) {
-                closesocket(s);
+                g_wsa.closesocket(s);
                 return 0;
             }
             fd_set wfds, efds;
@@ -132,20 +315,20 @@ uint64_t w32_tcp_connect(w32_bytes host, uint16_t port, uint32_t timeout_ms) {
             struct timeval tv;
             tv.tv_sec = (long)(timeout_ms / 1000);
             tv.tv_usec = (long)((timeout_ms % 1000) * 1000);
-            int sel = select(0, NULL, &wfds, &efds, &tv);
+            int sel = g_wsa.select(0, NULL, &wfds, &efds, &tv);
             int so_err = 0;
             int so_len = sizeof(so_err);
-            if (sel <= 0 || FD_ISSET(s, &efds) ||
-                getsockopt(s, SOL_SOCKET, SO_ERROR, (char *)&so_err, &so_len) != 0 || so_err != 0) {
-                closesocket(s);
+            if (sel <= 0 || w32_fd_isset(s, &efds) ||
+                g_wsa.getsockopt(s, SOL_SOCKET, SO_ERROR, (char *)&so_err, &so_len) != 0 || so_err != 0) {
+                g_wsa.closesocket(s);
                 return 0;
             }
         }
         nb = 0;
-        ioctlsocket(s, FIONBIO, &nb);
+        g_wsa.ioctlsocket(s, FIONBIO, &nb);
     } else {
-        if (connect(s, (struct sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR) {
-            closesocket(s);
+        if (g_wsa.connect(s, (struct sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR) {
+            g_wsa.closesocket(s);
             return 0;
         }
     }
@@ -153,44 +336,44 @@ uint64_t w32_tcp_connect(w32_bytes host, uint16_t port, uint32_t timeout_ms) {
 }
 
 int64_t w32_socket_send(uint64_t sock, w32_bytes data) {
-    if (!sock) return -1;
+    if (!sock || !ensure_ws2()) return -1;
     if (data.len <= 0) return 0;
     int chunk = data.len > 0x40000000LL ? 0x40000000 : (int)data.len;
-    int n = send((SOCKET)sock, (const char *)data.data, chunk, 0);
+    int n = g_wsa.send((SOCKET)sock, (const char *)data.data, chunk, 0);
     return n == SOCKET_ERROR ? -1 : (int64_t)n;
 }
 
 int64_t w32_socket_recv(uint64_t sock, w32_mut_bytes buf) {
-    if (!sock) return -1;
+    if (!sock || !ensure_ws2()) return -1;
     if (buf.len <= 0) return 0;
     int chunk = buf.len > 0x40000000LL ? 0x40000000 : (int)buf.len;
-    int n = recv((SOCKET)sock, (char *)buf.data, chunk, 0);
+    int n = g_wsa.recv((SOCKET)sock, (char *)buf.data, chunk, 0);
     return n == SOCKET_ERROR ? -1 : (int64_t)n;
 }
 
 uint8_t w32_socket_set_timeout(uint64_t sock, uint32_t recv_ms, uint32_t send_ms) {
-    if (!sock) return 0;
+    if (!sock || !ensure_ws2()) return 0;
     DWORD r = (DWORD)recv_ms;
     DWORD s = (DWORD)send_ms;
-    int ok1 = setsockopt((SOCKET)sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&r, sizeof(r)) == 0;
-    int ok2 = setsockopt((SOCKET)sock, SOL_SOCKET, SO_SNDTIMEO, (const char *)&s, sizeof(s)) == 0;
+    int ok1 = g_wsa.setsockopt((SOCKET)sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&r, sizeof(r)) == 0;
+    int ok2 = g_wsa.setsockopt((SOCKET)sock, SOL_SOCKET, SO_SNDTIMEO, (const char *)&s, sizeof(s)) == 0;
     return (ok1 && ok2) ? 1 : 0;
 }
 
 uint8_t w32_socket_set_nonblocking(uint64_t sock, uint8_t nb) {
-    if (!sock) return 0;
+    if (!sock || !ensure_ws2()) return 0;
     u_long mode = nb ? 1 : 0;
-    return ioctlsocket((SOCKET)sock, FIONBIO, &mode) == 0 ? 1 : 0;
+    return g_wsa.ioctlsocket((SOCKET)sock, FIONBIO, &mode) == 0 ? 1 : 0;
 }
 
 uint8_t w32_socket_shutdown(uint64_t sock) {
-    if (!sock) return 0;
-    return shutdown((SOCKET)sock, SD_BOTH) == 0 ? 1 : 0;
+    if (!sock || !ensure_ws2()) return 0;
+    return g_wsa.shutdown((SOCKET)sock, SD_BOTH) == 0 ? 1 : 0;
 }
 
 uint8_t w32_socket_close(uint64_t sock) {
-    if (!sock) return 0;
-    return closesocket((SOCKET)sock) == 0 ? 1 : 0;
+    if (!sock || !ensure_ws2()) return 0;
+    return g_wsa.closesocket((SOCKET)sock) == 0 ? 1 : 0;
 }
 
 uint64_t w32_udp_bind(w32_bytes host, uint16_t port) {
@@ -198,23 +381,23 @@ uint64_t w32_udp_bind(w32_bytes host, uint16_t port) {
     struct sockaddr_in addr;
     if (!resolve_ipv4_addr(host, port, &addr)) return 0;
 
-    SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    SOCKET s = g_wsa.socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (s == INVALID_SOCKET) return 0;
-    if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR) {
-        closesocket(s);
+    if (g_wsa.bind(s, (struct sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR) {
+        g_wsa.closesocket(s);
         return 0;
     }
     return (uint64_t)s;
 }
 
 int64_t w32_udp_send_to(uint64_t sock, w32_bytes host, uint16_t port, w32_bytes data) {
-    if (!sock || data.len < 0) return -1;
+    if (!sock || data.len < 0 || !ensure_ws2()) return -1;
     if (data.len > 0 && !data.data) return -1;
     struct sockaddr_in addr;
     if (!resolve_ipv4_addr(host, port, &addr)) return -1;
     int chunk = data.len > 0x40000000LL ? 0x40000000 : (int)data.len;
     const char *ptr = chunk > 0 ? (const char *)data.data : "";
-    int n = sendto(
+    int n = g_wsa.sendto(
         (SOCKET)sock, ptr, chunk, 0,
         (struct sockaddr *)&addr, sizeof(addr)
     );
@@ -222,17 +405,17 @@ int64_t w32_udp_send_to(uint64_t sock, w32_bytes host, uint16_t port, w32_bytes 
 }
 
 int64_t w32_udp_recv_from(uint64_t sock, w32_mut_bytes buf, gs_rref out_host, uint16_t *out_port) {
-    if (!sock || !buf.data || buf.len <= 0) return -1;
+    if (!sock || !buf.data || buf.len <= 0 || !ensure_ws2()) return -1;
     int chunk = buf.len > 0x40000000LL ? 0x40000000 : (int)buf.len;
     struct sockaddr_in from;
     int from_len = sizeof(from);
-    int n = recvfrom((SOCKET)sock, (char *)buf.data, chunk, 0, (struct sockaddr *)&from, &from_len);
+    int n = g_wsa.recvfrom((SOCKET)sock, (char *)buf.data, chunk, 0, (struct sockaddr *)&from, &from_len);
     if (n == SOCKET_ERROR) return -1;
     char ip[INET_ADDRSTRLEN];
-    if (inet_ntop(AF_INET, &from.sin_addr, ip, sizeof(ip))) {
+    if (g_wsa.inet_ntop(AF_INET, &from.sin_addr, ip, sizeof(ip))) {
         gs_bld_append(out_host, ip, (int64_t)strlen(ip));
     }
-    if (out_port) *out_port = ntohs(from.sin_port);
+    if (out_port) *out_port = w32_bswap16(from.sin_port);
     return (int64_t)n;
 }
 
@@ -241,7 +424,7 @@ uint8_t w32_dns_resolve_ipv4(w32_bytes host, gs_rref out_ip) {
     struct sockaddr_in addr;
     if (!resolve_ipv4_addr(host, 0, &addr)) return 0;
     char ip[INET_ADDRSTRLEN];
-    if (!inet_ntop(AF_INET, &addr.sin_addr, ip, sizeof(ip))) return 0;
+    if (!g_wsa.inet_ntop(AF_INET, &addr.sin_addr, ip, sizeof(ip))) return 0;
     gs_bld_append(out_ip, ip, (int64_t)strlen(ip));
     return 1;
 }
@@ -257,6 +440,7 @@ uint8_t w32_http_request(
     uint32_t *out_status,
     uint32_t timeout_ms
 ) {
+    if (!ensure_winhttp()) return 0;
     w32_wide_buf wmethod, wurl, wctype;
     if (!w32_wide_init(&wmethod, method) || wmethod.len == 0) {
         w32_wide_free(&wmethod);
@@ -286,14 +470,14 @@ uint8_t w32_http_request(
     uc.dwUrlPathLength = 2048;
 
     uint8_t ok = 0;
-    if (!WinHttpCrackUrl(wurl.ptr, (DWORD)wurl.len, 0, &uc)) {
+    if (!g_http.CrackUrl(wurl.ptr, (DWORD)wurl.len, 0, &uc)) {
         goto cleanup_bufs;
     }
     /* Strip any URL fragment (#...) before sending the HTTP request target. */
     wchar_t *frag = wcschr(path, L'#');
     if (frag) *frag = L'\0';
 
-    HINTERNET hSession = WinHttpOpen(
+    HINTERNET hSession = g_http.Open(
         L"win32-goose/1.0",
         WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
         WINHTTP_NO_PROXY_NAME,
@@ -303,22 +487,22 @@ uint8_t w32_http_request(
     if (!hSession) goto cleanup_bufs;
 
     int tmo = timeout_ms > 0 ? (int)timeout_ms : 10000;
-    WinHttpSetTimeouts(hSession, tmo, tmo, tmo, tmo);
+    g_http.SetTimeouts(hSession, tmo, tmo, tmo, tmo);
 
-    HINTERNET hConnect = WinHttpConnect(hSession, host, uc.nPort, 0);
+    HINTERNET hConnect = g_http.Connect(hSession, host, uc.nPort, 0);
     if (!hConnect) {
-        WinHttpCloseHandle(hSession);
+        g_http.CloseHandle(hSession);
         goto cleanup_bufs;
     }
 
     DWORD req_flags = (uc.nScheme == INTERNET_SCHEME_HTTPS) ? WINHTTP_FLAG_SECURE : 0;
-    HINTERNET hRequest = WinHttpOpenRequest(
+    HINTERNET hRequest = g_http.OpenRequest(
         hConnect, wmethod.ptr, path[0] ? path : L"/", NULL,
         WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, req_flags
     );
     if (!hRequest) {
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
+        g_http.CloseHandle(hConnect);
+        g_http.CloseHandle(hSession);
         goto cleanup_bufs;
     }
 
@@ -329,9 +513,9 @@ uint8_t w32_http_request(
         size_t hdr_cap = (size_t)wctype.len + 20;
         hdr_alloc = (wchar_t *)malloc(hdr_cap * sizeof(wchar_t));
         if (!hdr_alloc) {
-            WinHttpCloseHandle(hRequest);
-            WinHttpCloseHandle(hConnect);
-            WinHttpCloseHandle(hSession);
+            g_http.CloseHandle(hRequest);
+            g_http.CloseHandle(hConnect);
+            g_http.CloseHandle(hSession);
             goto cleanup_bufs;
         }
         int n = swprintf(hdr_alloc, hdr_cap, L"Content-Type: %ls\r\n", wctype.ptr);
@@ -344,11 +528,11 @@ uint8_t w32_http_request(
     LPVOID opt_body = (body.data && body.len > 0) ? (LPVOID)body.data : WINHTTP_NO_REQUEST_DATA;
     DWORD body_len = (body.data && body.len > 0) ? (DWORD)body.len : 0;
 
-    if (WinHttpSendRequest(hRequest, headers, hdr_len, opt_body, body_len, body_len, 0) &&
-        WinHttpReceiveResponse(hRequest, NULL)) {
+    if (g_http.SendRequest(hRequest, headers, hdr_len, opt_body, body_len, body_len, 0) &&
+        g_http.ReceiveResponse(hRequest, NULL)) {
         DWORD status = 0;
         DWORD sz = sizeof(status);
-        WinHttpQueryHeaders(
+        g_http.QueryHeaders(
             hRequest,
             WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
             WINHTTP_HEADER_NAME_BY_INDEX,
@@ -360,7 +544,7 @@ uint8_t w32_http_request(
         uint8_t read_ok = 1;
         for (;;) {
             DWORD avail = 0;
-            if (!WinHttpQueryDataAvailable(hRequest, &avail)) {
+            if (!g_http.QueryDataAvailable(hRequest, &avail)) {
                 read_ok = 0;
                 break;
             }
@@ -368,7 +552,7 @@ uint8_t w32_http_request(
             while (avail > 0) {
                 DWORD to_read = avail > sizeof(chunk) ? (DWORD)sizeof(chunk) : avail;
                 DWORD got = 0;
-                if (!WinHttpReadData(hRequest, chunk, to_read, &got)) {
+                if (!g_http.ReadData(hRequest, chunk, to_read, &got)) {
                     read_ok = 0;
                     break;
                 }
@@ -382,9 +566,9 @@ uint8_t w32_http_request(
     }
 
     free(hdr_alloc);
-    WinHttpCloseHandle(hRequest);
-    WinHttpCloseHandle(hConnect);
-    WinHttpCloseHandle(hSession);
+    g_http.CloseHandle(hRequest);
+    g_http.CloseHandle(hConnect);
+    g_http.CloseHandle(hSession);
 
 cleanup_bufs:
     w32_wide_free(&wctype);
@@ -396,12 +580,12 @@ cleanup_bufs:
 /* ---- WSAPoll & WinHTTP custom/response headers --------------------------- */
 
 int32_t w32_socket_poll(uint64_t sock, uint8_t write_check, int32_t timeout_ms) {
-    if (!sock) return -1;
+    if (!sock || !ensure_ws2()) return -1;
     WSAPOLLFD pfd;
     pfd.fd = (SOCKET)sock;
     pfd.events = write_check ? POLLWRNORM : POLLRDNORM;
     pfd.revents = 0;
-    int r = WSAPoll(&pfd, 1, (INT)timeout_ms);
+    int r = g_wsa.WSAPoll(&pfd, 1, (INT)timeout_ms);
     if (r <= 0) return (int32_t)r;
     if (pfd.revents & (POLLNVAL | POLLERR)) return -1;
     if (pfd.revents & POLLHUP) return write_check ? -1 : 1;
@@ -418,6 +602,7 @@ uint8_t w32_http_request_ex(
     gs_rref out_resp_headers,
     uint32_t timeout_ms
 ) {
+    if (!ensure_winhttp()) return 0;
     w32_wide_buf wmethod, wurl, whdrs;
     if (!w32_wide_init(&wmethod, method) || wmethod.len == 0) {
         w32_wide_free(&wmethod);
@@ -447,11 +632,11 @@ uint8_t w32_http_request_ex(
     uc.dwUrlPathLength = 2048;
 
     uint8_t ok = 0;
-    if (!WinHttpCrackUrl(wurl.ptr, (DWORD)wurl.len, 0, &uc)) goto done_ex;
+    if (!g_http.CrackUrl(wurl.ptr, (DWORD)wurl.len, 0, &uc)) goto done_ex;
     wchar_t *frag = wcschr(path, L'#');
     if (frag) *frag = L'\0';
 
-    HINTERNET hSession = WinHttpOpen(
+    HINTERNET hSession = g_http.Open(
         L"win32-goose/1.0",
         WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
         WINHTTP_NO_PROXY_NAME,
@@ -461,22 +646,22 @@ uint8_t w32_http_request_ex(
     if (!hSession) goto done_ex;
 
     int tmo = timeout_ms > 0 ? (int)timeout_ms : 10000;
-    WinHttpSetTimeouts(hSession, tmo, tmo, tmo, tmo);
+    g_http.SetTimeouts(hSession, tmo, tmo, tmo, tmo);
 
-    HINTERNET hConnect = WinHttpConnect(hSession, host, uc.nPort, 0);
+    HINTERNET hConnect = g_http.Connect(hSession, host, uc.nPort, 0);
     if (!hConnect) {
-        WinHttpCloseHandle(hSession);
+        g_http.CloseHandle(hSession);
         goto done_ex;
     }
 
     DWORD req_flags = (uc.nScheme == INTERNET_SCHEME_HTTPS) ? WINHTTP_FLAG_SECURE : 0;
-    HINTERNET hRequest = WinHttpOpenRequest(
+    HINTERNET hRequest = g_http.OpenRequest(
         hConnect, wmethod.ptr, path[0] ? path : L"/", NULL,
         WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, req_flags
     );
     if (!hRequest) {
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
+        g_http.CloseHandle(hConnect);
+        g_http.CloseHandle(hSession);
         goto done_ex;
     }
 
@@ -485,11 +670,11 @@ uint8_t w32_http_request_ex(
     LPVOID opt_body = (body.data && body.len > 0) ? (LPVOID)body.data : WINHTTP_NO_REQUEST_DATA;
     DWORD body_len = (body.data && body.len > 0) ? (DWORD)body.len : 0;
 
-    if (WinHttpSendRequest(hRequest, hdr_ptr, hdr_len, opt_body, body_len, body_len, 0) &&
-        WinHttpReceiveResponse(hRequest, NULL)) {
+    if (g_http.SendRequest(hRequest, hdr_ptr, hdr_len, opt_body, body_len, body_len, 0) &&
+        g_http.ReceiveResponse(hRequest, NULL)) {
         DWORD status = 0;
         DWORD sz = sizeof(status);
-        WinHttpQueryHeaders(
+        g_http.QueryHeaders(
             hRequest,
             WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
             WINHTTP_HEADER_NAME_BY_INDEX,
@@ -498,14 +683,14 @@ uint8_t w32_http_request_ex(
         if (out_status) *out_status = (uint32_t)status;
 
         DWORD raw_hdr_bytes = 0;
-        WinHttpQueryHeaders(
+        g_http.QueryHeaders(
             hRequest, WINHTTP_QUERY_RAW_HEADERS_CRLF, WINHTTP_HEADER_NAME_BY_INDEX,
             NULL, &raw_hdr_bytes, WINHTTP_NO_HEADER_INDEX
         );
         if (raw_hdr_bytes > 0) {
             wchar_t *rbuf = (wchar_t *)malloc((size_t)raw_hdr_bytes + sizeof(wchar_t));
             if (rbuf) {
-                if (WinHttpQueryHeaders(
+                if (g_http.QueryHeaders(
                         hRequest, WINHTTP_QUERY_RAW_HEADERS_CRLF, WINHTTP_HEADER_NAME_BY_INDEX,
                         rbuf, &raw_hdr_bytes, WINHTTP_NO_HEADER_INDEX)) {
                     rbuf[raw_hdr_bytes / sizeof(wchar_t)] = L'\0';
@@ -519,7 +704,7 @@ uint8_t w32_http_request_ex(
         uint8_t read_ok = 1;
         for (;;) {
             DWORD avail = 0;
-            if (!WinHttpQueryDataAvailable(hRequest, &avail)) {
+            if (!g_http.QueryDataAvailable(hRequest, &avail)) {
                 read_ok = 0;
                 break;
             }
@@ -527,7 +712,7 @@ uint8_t w32_http_request_ex(
             while (avail > 0) {
                 DWORD to_read = avail > sizeof(chunk) ? (DWORD)sizeof(chunk) : avail;
                 DWORD got = 0;
-                if (!WinHttpReadData(hRequest, chunk, to_read, &got)) {
+                if (!g_http.ReadData(hRequest, chunk, to_read, &got)) {
                     read_ok = 0;
                     break;
                 }
@@ -540,9 +725,9 @@ uint8_t w32_http_request_ex(
         ok = read_ok;
     }
 
-    WinHttpCloseHandle(hRequest);
-    WinHttpCloseHandle(hConnect);
-    WinHttpCloseHandle(hSession);
+    g_http.CloseHandle(hRequest);
+    g_http.CloseHandle(hConnect);
+    g_http.CloseHandle(hSession);
 
 done_ex:
     w32_wide_free(&whdrs);

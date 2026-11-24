@@ -107,11 +107,112 @@ static pfn_glVertexAttribPointer      g_glVertexAttribPointer;
 static int g_wgl_bootstrapped = 0;
 static int g_gl_funcs_loaded = 0;
 
+/* ---- Lazy opengl32.dll WGL + OpenGL 1.1 table ---------------------------- */
+
+typedef PROC  (WINAPI *pfn_wglGetProcAddress)(LPCSTR);
+typedef HGLRC (WINAPI *pfn_wglCreateContext)(HDC);
+typedef BOOL  (WINAPI *pfn_wglMakeCurrent)(HDC, HGLRC);
+typedef BOOL  (WINAPI *pfn_wglDeleteContext)(HGLRC);
+typedef HGLRC (WINAPI *pfn_wglGetCurrentContext)(void);
+
+typedef void (APIENTRY *pfn_glEnable)(GLenum);
+typedef void (APIENTRY *pfn_glBlendFunc)(GLenum, GLenum);
+typedef const GLubyte *(APIENTRY *pfn_glGetString)(GLenum);
+typedef void (APIENTRY *pfn_glViewport)(GLint, GLint, GLsizei, GLsizei);
+typedef void (APIENTRY *pfn_glClearColor)(GLfloat, GLfloat, GLfloat, GLfloat);
+typedef void (APIENTRY *pfn_glClear)(GLbitfield);
+typedef void (APIENTRY *pfn_glDrawArrays)(GLenum, GLint, GLsizei);
+typedef void (APIENTRY *pfn_glFinish)(void);
+typedef GLenum (APIENTRY *pfn_glGetError)(void);
+typedef void (APIENTRY *pfn_glPixelStorei)(GLenum, GLint);
+typedef void (APIENTRY *pfn_glReadPixels)(GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void *);
+typedef void (APIENTRY *pfn_glDrawElements)(GLenum, GLsizei, GLenum, const void *);
+typedef void (APIENTRY *pfn_glGenTextures)(GLsizei, GLuint *);
+typedef void (APIENTRY *pfn_glBindTexture)(GLenum, GLuint);
+typedef void (APIENTRY *pfn_glTexParameteri)(GLenum, GLenum, GLint);
+typedef void (APIENTRY *pfn_glTexImage2D)(GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *);
+typedef void (APIENTRY *pfn_glTexSubImage2D)(GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, const void *);
+typedef void (APIENTRY *pfn_glDeleteTextures)(GLsizei, const GLuint *);
+
+static struct {
+    int tried;
+    int loaded;
+    HMODULE mod;
+    pfn_wglGetProcAddress    wglGetProcAddress;
+    pfn_wglCreateContext     wglCreateContext;
+    pfn_wglMakeCurrent       wglMakeCurrent;
+    pfn_wglDeleteContext     wglDeleteContext;
+    pfn_wglGetCurrentContext wglGetCurrentContext;
+    pfn_glEnable             glEnable;
+    pfn_glBlendFunc          glBlendFunc;
+    pfn_glGetString          glGetString;
+    pfn_glViewport           glViewport;
+    pfn_glClearColor         glClearColor;
+    pfn_glClear              glClear;
+    pfn_glDrawArrays         glDrawArrays;
+    pfn_glFinish             glFinish;
+    pfn_glGetError           glGetError;
+    pfn_glPixelStorei        glPixelStorei;
+    pfn_glReadPixels         glReadPixels;
+    pfn_glDrawElements       glDrawElements;
+    pfn_glGenTextures        glGenTextures;
+    pfn_glBindTexture        glBindTexture;
+    pfn_glTexParameteri      glTexParameteri;
+    pfn_glTexImage2D         glTexImage2D;
+    pfn_glTexSubImage2D      glTexSubImage2D;
+    pfn_glDeleteTextures     glDeleteTextures;
+} g_ogl;
+
+static int ensure_opengl32(void) {
+    if (g_ogl.loaded) return 1;
+    if (g_ogl.tried) return 0;
+    g_ogl.tried = 1;
+    g_ogl.mod = LoadLibraryW(L"opengl32.dll");
+    if (!g_ogl.mod) return 0;
+
+    g_ogl.wglGetProcAddress    = (pfn_wglGetProcAddress)(uintptr_t)GetProcAddress(g_ogl.mod, "wglGetProcAddress");
+    g_ogl.wglCreateContext     = (pfn_wglCreateContext)(uintptr_t)GetProcAddress(g_ogl.mod, "wglCreateContext");
+    g_ogl.wglMakeCurrent       = (pfn_wglMakeCurrent)(uintptr_t)GetProcAddress(g_ogl.mod, "wglMakeCurrent");
+    g_ogl.wglDeleteContext     = (pfn_wglDeleteContext)(uintptr_t)GetProcAddress(g_ogl.mod, "wglDeleteContext");
+    g_ogl.wglGetCurrentContext = (pfn_wglGetCurrentContext)(uintptr_t)GetProcAddress(g_ogl.mod, "wglGetCurrentContext");
+    g_ogl.glEnable             = (pfn_glEnable)(uintptr_t)GetProcAddress(g_ogl.mod, "glEnable");
+    g_ogl.glBlendFunc          = (pfn_glBlendFunc)(uintptr_t)GetProcAddress(g_ogl.mod, "glBlendFunc");
+    g_ogl.glGetString          = (pfn_glGetString)(uintptr_t)GetProcAddress(g_ogl.mod, "glGetString");
+    g_ogl.glViewport           = (pfn_glViewport)(uintptr_t)GetProcAddress(g_ogl.mod, "glViewport");
+    g_ogl.glClearColor         = (pfn_glClearColor)(uintptr_t)GetProcAddress(g_ogl.mod, "glClearColor");
+    g_ogl.glClear              = (pfn_glClear)(uintptr_t)GetProcAddress(g_ogl.mod, "glClear");
+    g_ogl.glDrawArrays         = (pfn_glDrawArrays)(uintptr_t)GetProcAddress(g_ogl.mod, "glDrawArrays");
+    g_ogl.glFinish             = (pfn_glFinish)(uintptr_t)GetProcAddress(g_ogl.mod, "glFinish");
+    g_ogl.glGetError           = (pfn_glGetError)(uintptr_t)GetProcAddress(g_ogl.mod, "glGetError");
+    g_ogl.glPixelStorei        = (pfn_glPixelStorei)(uintptr_t)GetProcAddress(g_ogl.mod, "glPixelStorei");
+    g_ogl.glReadPixels         = (pfn_glReadPixels)(uintptr_t)GetProcAddress(g_ogl.mod, "glReadPixels");
+    g_ogl.glDrawElements       = (pfn_glDrawElements)(uintptr_t)GetProcAddress(g_ogl.mod, "glDrawElements");
+    g_ogl.glGenTextures        = (pfn_glGenTextures)(uintptr_t)GetProcAddress(g_ogl.mod, "glGenTextures");
+    g_ogl.glBindTexture        = (pfn_glBindTexture)(uintptr_t)GetProcAddress(g_ogl.mod, "glBindTexture");
+    g_ogl.glTexParameteri      = (pfn_glTexParameteri)(uintptr_t)GetProcAddress(g_ogl.mod, "glTexParameteri");
+    g_ogl.glTexImage2D         = (pfn_glTexImage2D)(uintptr_t)GetProcAddress(g_ogl.mod, "glTexImage2D");
+    g_ogl.glTexSubImage2D      = (pfn_glTexSubImage2D)(uintptr_t)GetProcAddress(g_ogl.mod, "glTexSubImage2D");
+    g_ogl.glDeleteTextures     = (pfn_glDeleteTextures)(uintptr_t)GetProcAddress(g_ogl.mod, "glDeleteTextures");
+
+    if (g_ogl.wglGetProcAddress && g_ogl.wglCreateContext && g_ogl.wglMakeCurrent &&
+        g_ogl.wglDeleteContext && g_ogl.wglGetCurrentContext &&
+        g_ogl.glEnable && g_ogl.glBlendFunc && g_ogl.glGetString &&
+        g_ogl.glViewport && g_ogl.glClearColor && g_ogl.glClear &&
+        g_ogl.glDrawArrays && g_ogl.glFinish && g_ogl.glGetError &&
+        g_ogl.glPixelStorei && g_ogl.glReadPixels && g_ogl.glDrawElements &&
+        g_ogl.glGenTextures && g_ogl.glBindTexture && g_ogl.glTexParameteri &&
+        g_ogl.glTexImage2D && g_ogl.glTexSubImage2D && g_ogl.glDeleteTextures) {
+        g_ogl.loaded = 1;
+        return 1;
+    }
+    return 0;
+}
+
 static void *load_gl_proc(const char *name) {
-    void *p = (void *)(uintptr_t)wglGetProcAddress(name);
+    if (!g_ogl.wglGetProcAddress) return NULL;
+    void *p = (void *)(uintptr_t)g_ogl.wglGetProcAddress(name);
     if (!p || p == (void *)1 || p == (void *)2 || p == (void *)3 || p == (void *)(intptr_t)-1) {
-        HMODULE ogl = GetModuleHandleW(L"opengl32.dll");
-        if (ogl) p = (void *)(uintptr_t)GetProcAddress(ogl, name);
+        if (g_ogl.mod) p = (void *)(uintptr_t)GetProcAddress(g_ogl.mod, name);
     }
     return p;
 }
@@ -148,18 +249,18 @@ static void bootstrap_wgl_extensions(void) {
 
         int pf = ChoosePixelFormat(dc, &pfd);
         if (pf && SetPixelFormat(dc, pf, &pfd)) {
-            HGLRC rc = wglCreateContext(dc);
+            HGLRC rc = g_ogl.wglCreateContext(dc);
             if (rc) {
-                if (wglMakeCurrent(dc, rc)) {
+                if (g_ogl.wglMakeCurrent(dc, rc)) {
                     g_wglChoosePixelFormatARB =
                         (pfn_wglChoosePixelFormatARB)load_gl_proc("wglChoosePixelFormatARB");
                     g_wglCreateContextAttribsARB =
                         (pfn_wglCreateContextAttribsARB)load_gl_proc("wglCreateContextAttribsARB");
                     g_wglSwapIntervalEXT =
                         (pfn_wglSwapIntervalEXT)load_gl_proc("wglSwapIntervalEXT");
-                    wglMakeCurrent(NULL, NULL);
+                    g_ogl.wglMakeCurrent(NULL, NULL);
                 }
-                wglDeleteContext(rc);
+                g_ogl.wglDeleteContext(rc);
             }
         }
         ReleaseDC(dummy, dc);
@@ -255,7 +356,7 @@ static w32_gl_mesh *get_mesh(uint32_t id) {
 
 uint32_t w32_gl_create(uint64_t hwnd_u64, uint8_t vsync) {
     HWND hwnd = (HWND)(uintptr_t)hwnd_u64;
-    if (!hwnd) return 0;
+    if (!hwnd || !ensure_opengl32()) return 0;
 
     int slot = -1;
     for (int i = 0; i < W32_MAX_GL_CTXS; i++) {
@@ -319,22 +420,22 @@ uint32_t w32_gl_create(uint64_t hwnd_u64, uint8_t vsync) {
         hglrc = g_wglCreateContextAttribsARB(hdc, NULL, ctx_attribs);
     }
     if (!hglrc) {
-        hglrc = wglCreateContext(hdc);
+        hglrc = g_ogl.wglCreateContext(hdc);
     }
     if (!hglrc) {
         ReleaseDC(hwnd, hdc);
         return 0;
     }
 
-    if (!wglMakeCurrent(hdc, hglrc)) {
-        wglDeleteContext(hglrc);
+    if (!g_ogl.wglMakeCurrent(hdc, hglrc)) {
+        g_ogl.wglDeleteContext(hglrc);
         ReleaseDC(hwnd, hdc);
         return 0;
     }
 
     if (!load_gl33_funcs()) {
-        wglMakeCurrent(NULL, NULL);
-        wglDeleteContext(hglrc);
+        g_ogl.wglMakeCurrent(NULL, NULL);
+        g_ogl.wglDeleteContext(hglrc);
         ReleaseDC(hwnd, hdc);
         return 0;
     }
@@ -342,8 +443,8 @@ uint32_t w32_gl_create(uint64_t hwnd_u64, uint8_t vsync) {
         g_wglSwapIntervalEXT(vsync ? 1 : 0);
     }
 
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    g_ogl.glEnable(GL_BLEND);
+    g_ogl.glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     w32_gl_ctx *c = &g_gl_ctxs[slot];
     c->used = 1;
@@ -356,18 +457,20 @@ uint32_t w32_gl_create(uint64_t hwnd_u64, uint8_t vsync) {
 void w32_gl_destroy(uint32_t ctx_id) {
     w32_gl_ctx *c = get_ctx(ctx_id);
     if (!c) return;
-    if (wglGetCurrentContext() == c->hglrc) {
-        wglMakeCurrent(NULL, NULL);
+    if (g_ogl.loaded) {
+        if (g_ogl.wglGetCurrentContext() == c->hglrc) {
+            g_ogl.wglMakeCurrent(NULL, NULL);
+        }
+        if (c->hglrc) g_ogl.wglDeleteContext(c->hglrc);
     }
-    if (c->hglrc) wglDeleteContext(c->hglrc);
     if (c->hdc && c->hwnd) ReleaseDC(c->hwnd, c->hdc);
     memset(c, 0, sizeof(*c));
 }
 
 uint8_t w32_gl_make_current(uint32_t ctx_id) {
     w32_gl_ctx *c = get_ctx(ctx_id);
-    if (!c) return 0;
-    return wglMakeCurrent(c->hdc, c->hglrc) ? 1 : 0;
+    if (!c || !g_ogl.loaded) return 0;
+    return g_ogl.wglMakeCurrent(c->hdc, c->hglrc) ? 1 : 0;
 }
 
 uint8_t w32_gl_swap_buffers(uint32_t ctx_id) {
@@ -378,16 +481,16 @@ uint8_t w32_gl_swap_buffers(uint32_t ctx_id) {
 
 void w32_gl_set_vsync(uint32_t ctx_id, uint8_t vsync) {
     w32_gl_ctx *c = get_ctx(ctx_id);
-    if (!c || !g_wglSwapIntervalEXT) return;
-    wglMakeCurrent(c->hdc, c->hglrc);
+    if (!c || !g_wglSwapIntervalEXT || !g_ogl.loaded) return;
+    g_ogl.wglMakeCurrent(c->hdc, c->hglrc);
     g_wglSwapIntervalEXT(vsync ? 1 : 0);
 }
 
 uint8_t w32_gl_renderer_name(uint32_t ctx_id, gs_rref out) {
     w32_gl_ctx *c = get_ctx(ctx_id);
-    if (!c) return 0;
-    wglMakeCurrent(c->hdc, c->hglrc);
-    const char *s = (const char *)glGetString(GL_RENDERER);
+    if (!c || !g_ogl.loaded) return 0;
+    g_ogl.wglMakeCurrent(c->hdc, c->hglrc);
+    const char *s = (const char *)g_ogl.glGetString(GL_RENDERER);
     if (!s) return 0;
     gs_bld_append(out, s, (int64_t)strlen(s));
     return 1;
@@ -395,9 +498,9 @@ uint8_t w32_gl_renderer_name(uint32_t ctx_id, gs_rref out) {
 
 uint8_t w32_gl_version_string(uint32_t ctx_id, gs_rref out) {
     w32_gl_ctx *c = get_ctx(ctx_id);
-    if (!c) return 0;
-    wglMakeCurrent(c->hdc, c->hglrc);
-    const char *s = (const char *)glGetString(GL_VERSION);
+    if (!c || !g_ogl.loaded) return 0;
+    g_ogl.wglMakeCurrent(c->hdc, c->hglrc);
+    const char *s = (const char *)g_ogl.glGetString(GL_VERSION);
     if (!s) return 0;
     gs_bld_append(out, s, (int64_t)strlen(s));
     return 1;
@@ -405,18 +508,18 @@ uint8_t w32_gl_version_string(uint32_t ctx_id, gs_rref out) {
 
 void w32_gl_begin_frame(uint32_t ctx_id, float r, float g, float b, float a) {
     w32_gl_ctx *c = get_ctx(ctx_id);
-    if (!c) return;
-    wglMakeCurrent(c->hdc, c->hglrc);
+    if (!c || !g_ogl.loaded) return;
+    g_ogl.wglMakeCurrent(c->hdc, c->hglrc);
     RECT rc;
     if (GetClientRect(c->hwnd, &rc)) {
         int w = (int)(rc.right - rc.left);
         int h = (int)(rc.bottom - rc.top);
         if (w < 1) w = 1;
         if (h < 1) h = 1;
-        glViewport(0, 0, w, h);
+        g_ogl.glViewport(0, 0, w, h);
     }
-    glClearColor(r, g, b, a);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    g_ogl.glClearColor(r, g, b, a);
+    g_ogl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 }
 
 /* ---- GLSL Shaders & Uniforms --------------------------------------------- */
@@ -604,28 +707,28 @@ void w32_gl_bind_vertex_buffer(uint32_t mesh_id) {
 }
 
 void w32_gl_draw_arrays(uint32_t mode, int32_t first, int32_t count) {
-    glDrawArrays((GLenum)mode, (GLint)first, (GLsizei)count);
+    if (g_ogl.loaded) g_ogl.glDrawArrays((GLenum)mode, (GLint)first, (GLsizei)count);
 }
 
 /* Reads back one RGBA8 pixel (0xAABBGGRR) using top-left coordinates (matching D3D11). */
 uint8_t w32_gl_readback_pixel(uint32_t ctx_id, int32_t x, int32_t y, uint32_t *out_rgba) {
     w32_gl_ctx *c = get_ctx(ctx_id);
-    if (!c || !out_rgba) return 0;
-    wglMakeCurrent(c->hdc, c->hglrc);
+    if (!c || !out_rgba || !g_ogl.loaded) return 0;
+    g_ogl.wglMakeCurrent(c->hdc, c->hglrc);
     RECT rc;
     if (!GetClientRect(c->hwnd, &rc)) return 0;
     int32_t h = (int32_t)(rc.bottom - rc.top);
     int32_t gl_y = h - 1 - y;
     if (x < 0 || gl_y < 0 || x >= (rc.right - rc.left) || gl_y >= h) return 0;
 
-    glFinish();
+    g_ogl.glFinish();
     /* Drain any pre-existing GL errors so the check below reflects glReadPixels. */
-    while (glGetError() != GL_NO_ERROR) {}
-    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    while (g_ogl.glGetError() != GL_NO_ERROR) {}
+    g_ogl.glPixelStorei(GL_PACK_ALIGNMENT, 4);
     uint32_t px = 0;
-    glReadPixels((GLint)x, (GLint)gl_y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, &px);
+    g_ogl.glReadPixels((GLint)x, (GLint)gl_y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, &px);
     *out_rgba = px;
-    return glGetError() == GL_NO_ERROR ? 1 : 0;
+    return g_ogl.glGetError() == GL_NO_ERROR ? 1 : 0;
 }
 
 /* ---- OpenGL 3.3 Textures & Indexed Meshes -------------------------------- */
@@ -685,7 +788,7 @@ uint32_t w32_gl_create_indexed_mesh(w32_tex_vertex_slice verts, w32_u32_slice in
 }
 
 void w32_gl_draw_indexed(uint32_t mode, int32_t index_count) {
-    glDrawElements((GLenum)mode, (GLsizei)index_count, GL_UNSIGNED_INT, (const void *)0);
+    if (g_ogl.loaded) g_ogl.glDrawElements((GLenum)mode, (GLsizei)index_count, GL_UNSIGNED_INT, (const void *)0);
 }
 
 #define W32_MAX_GL_TEXTURES 64
@@ -705,7 +808,7 @@ static w32_gl_tex *get_gl_tex(uint32_t id) {
 }
 
 uint32_t w32_gl_create_texture_rgba(int32_t w, int32_t h, w32_u32_slice pixels_rgba) {
-    if (w <= 0 || h <= 0 || !pixels_rgba.data || pixels_rgba.len < (int64_t)w * (int64_t)h) return 0;
+    if (!ensure_opengl32() || w <= 0 || h <= 0 || !pixels_rgba.data || pixels_rgba.len < (int64_t)w * (int64_t)h) return 0;
     int slot = -1;
     for (int i = 0; i < W32_MAX_GL_TEXTURES; i++) {
         if (!g_gl_texs[i].used) { slot = i; break; }
@@ -713,16 +816,16 @@ uint32_t w32_gl_create_texture_rgba(int32_t w, int32_t h, w32_u32_slice pixels_r
     if (slot < 0) return 0;
 
     GLuint tex = 0;
-    glGenTextures(1, &tex);
+    g_ogl.glGenTextures(1, &tex);
     if (!tex) return 0;
-    glBindTexture(GL_TEXTURE_2D, tex);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)w, (GLsizei)h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels_rgba.data);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    g_ogl.glBindTexture(GL_TEXTURE_2D, tex);
+    g_ogl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    g_ogl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    g_ogl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    g_ogl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    g_ogl.glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    g_ogl.glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)w, (GLsizei)h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels_rgba.data);
+    g_ogl.glBindTexture(GL_TEXTURE_2D, 0);
 
     w32_gl_tex *t = &g_gl_texs[slot];
     t->used = 1;
@@ -734,23 +837,23 @@ uint32_t w32_gl_create_texture_rgba(int32_t w, int32_t h, w32_u32_slice pixels_r
 
 uint8_t w32_gl_update_texture_rgba(uint32_t tex_id, w32_u32_slice pixels_rgba) {
     w32_gl_tex *t = get_gl_tex(tex_id);
-    if (!t || !pixels_rgba.data || pixels_rgba.len < (int64_t)t->width * (int64_t)t->height) return 0;
-    glBindTexture(GL_TEXTURE_2D, t->tex);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, (GLsizei)t->width, (GLsizei)t->height, GL_RGBA, GL_UNSIGNED_BYTE, pixels_rgba.data);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    if (!t || !g_ogl.loaded || !pixels_rgba.data || pixels_rgba.len < (int64_t)t->width * (int64_t)t->height) return 0;
+    g_ogl.glBindTexture(GL_TEXTURE_2D, t->tex);
+    g_ogl.glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, (GLsizei)t->width, (GLsizei)t->height, GL_RGBA, GL_UNSIGNED_BYTE, pixels_rgba.data);
+    g_ogl.glBindTexture(GL_TEXTURE_2D, 0);
     return 1;
 }
 
 void w32_gl_bind_texture(uint32_t slot_idx, uint32_t tex_id) {
     w32_gl_tex *t = get_gl_tex(tex_id);
-    if (!t) return;
+    if (!t || !g_ogl.loaded) return;
     if (g_glActiveTexture) g_glActiveTexture((GLenum)(GL_TEXTURE0 + slot_idx));
-    glBindTexture(GL_TEXTURE_2D, t->tex);
+    g_ogl.glBindTexture(GL_TEXTURE_2D, t->tex);
 }
 
 void w32_gl_destroy_texture(uint32_t tex_id) {
     w32_gl_tex *t = get_gl_tex(tex_id);
     if (!t) return;
-    if (t->tex) glDeleteTextures(1, &t->tex);
+    if (t->tex && g_ogl.loaded) g_ogl.glDeleteTextures(1, &t->tex);
     memset(t, 0, sizeof(*t));
 }

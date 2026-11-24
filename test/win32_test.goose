@@ -1251,6 +1251,38 @@ fn test_bugfix_regressions() {
     print("[OK] bugfix regressions (utf16, timeout, filemap, reg, poll, wav, dib, d3d11, fullscreen)");
 }
 
+fn test_gl2d_sdf_and_text_atlas() {
+    let win = win32::create_window("win32-goose gl2d test", 240, 160);
+    assert(win.is_valid());
+    defer win.destroy();
+
+    let g = win32::gl2d_create(win, false);
+    assert(g.is_valid());
+    defer g.destroy();
+
+    let f = g.create_font("Segoe UI", 16.0, 600, false);
+    assert(f.is_valid());
+    defer f.destroy();
+
+    g.begin_draw(win32::colorf_rgb(16, 18, 24, 1.0));
+    g.fill_rounded_rect(12.0, 12.0, 100.0, 60.0, 8.0, win32::colorf_rgb(76, 194, 255, 1.0));
+    g.fill_ellipse(170.0, 42.0, 24.0, 24.0, win32::colorf_rgb(34, 211, 238, 1.0));
+    g.draw_line(12.0, 90.0, 220.0, 90.0, win32::colorf_rgb(139, 92, 246, 1.0), 2.0);
+    g.push_clip(12.0, 98.0, 200.0, 40.0);
+    g.draw_text("日本語テスト GL2D", f, 14.0, 100.0, 196.0, 32.0, win32::GL2D_ALIGN_START, win32::GL2D_ALIGN_CENTER, win32::colorf_rgb(245, 245, 245, 1.0));
+    g.pop_clip();
+
+    var px: u32 = 0;
+    assert(g.readback_pixel(40, 40, px));
+    let r = px & 0xFF;
+    let gch = (px >> 8) & 0xFF;
+    let b = (px >> 16) & 0xFF;
+    assert(r <= 85 && gch >= 185 && b >= 245);
+    assert(g.end_draw());
+
+    print("[OK] OpenGL 3.3 Core 2D SDF + GPU VRAM text atlas (win32_gl2d)");
+}
+
 // Ensures every interactive/file-backed shim symbol resolves and links under both JIT and AOT.
 fn verify_dialog_linkage(run_ui: bool) {
     guard run_ui;
@@ -1290,6 +1322,7 @@ fn main() {
     test_wic_and_gpu_textures();
     test_cursor_fullscreen_raw_input();
     test_bugfix_regressions();
+    test_gl2d_sdf_and_text_atlas();
     verify_dialog_linkage(false);
     print("ALL WIN32 TESTS PASSED");
 }

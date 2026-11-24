@@ -7,6 +7,68 @@
 #include <dxgi.h>
 #include <d3dcompiler.h>
 
+/* Inline COM IIDs so dxguid.lib / dxgi.lib are not required at link time. */
+static const GUID W32_IID_ID3D11Texture2D =
+    { 0x6f15aaf2, 0xd208, 0x4e89, { 0x9a, 0xb4, 0x48, 0x95, 0x35, 0xd3, 0x4f, 0x9c } };
+static const GUID W32_IID_IDXGIDevice =
+    { 0x54ec77fa, 0x1377, 0x44e6, { 0x8c, 0x32, 0x88, 0xfd, 0x5f, 0x44, 0xc8, 0x4c } };
+
+/* ---- Lazy DLL loading (d3d11.dll & d3dcompiler_*.dll) -------------------- */
+
+typedef HRESULT (WINAPI *pfn_D3D11CreateDeviceAndSwapChain)(
+    IDXGIAdapter *, D3D_DRIVER_TYPE, HMODULE, UINT,
+    const D3D_FEATURE_LEVEL *, UINT, UINT,
+    const DXGI_SWAP_CHAIN_DESC *, IDXGISwapChain **,
+    ID3D11Device **, D3D_FEATURE_LEVEL *, ID3D11DeviceContext **
+);
+typedef HRESULT (WINAPI *pfn_D3DCompile)(
+    LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO *, ID3DInclude *,
+    LPCSTR, LPCSTR, UINT, UINT, ID3DBlob **, ID3DBlob **
+);
+
+static struct {
+    int tried_d3d11;
+    int tried_compiler;
+    HMODULE h_d3d11;
+    HMODULE h_compiler;
+    pfn_D3D11CreateDeviceAndSwapChain create_device_and_swap_chain;
+    pfn_D3DCompile compile;
+} g_d3d_api;
+
+static int ensure_d3d11_api(void) {
+    if (g_d3d_api.create_device_and_swap_chain) return 1;
+    if (g_d3d_api.tried_d3d11) return 0;
+    g_d3d_api.tried_d3d11 = 1;
+    g_d3d_api.h_d3d11 = LoadLibraryW(L"d3d11.dll");
+    if (g_d3d_api.h_d3d11) {
+        g_d3d_api.create_device_and_swap_chain =
+            (pfn_D3D11CreateDeviceAndSwapChain)(uintptr_t)GetProcAddress(
+                g_d3d_api.h_d3d11, "D3D11CreateDeviceAndSwapChain"
+            );
+    }
+    return g_d3d_api.create_device_and_swap_chain ? 1 : 0;
+}
+
+static int ensure_d3dcompiler_api(void) {
+    if (g_d3d_api.compile) return 1;
+    if (g_d3d_api.tried_compiler) return 0;
+    g_d3d_api.tried_compiler = 1;
+    static const wchar_t *const kDlls[3] = {
+        L"d3dcompiler_47.dll",
+        L"d3dcompiler_46.dll",
+        L"d3dcompiler_43.dll"
+    };
+    for (int i = 0; i < 3; i++) {
+        g_d3d_api.h_compiler = LoadLibraryW(kDlls[i]);
+        if (g_d3d_api.h_compiler) {
+            g_d3d_api.compile =
+                (pfn_D3DCompile)(uintptr_t)GetProcAddress(g_d3d_api.h_compiler, "D3DCompile");
+            if (g_d3d_api.compile) return 1;
+        }
+    }
+    return 0;
+}
+
 /* ---- Internal slot tables ------------------------------------------------ */
 
 #define W32_MAX_D3D_DEVS   8
@@ -82,7 +144,7 @@ static int create_targets(w32_d3d_dev *d, int32_t w, int32_t h) {
     if (h <= 0) h = 1;
 
     ID3D11Texture2D *backbuf = NULL;
-    HRESULT hr = IDXGISwapChain_GetBuffer(d->swapchain, 0, &IID_ID3D11Texture2D, (void **)&backbuf);
+    HRESULT hr = IDXGISwapChain_GetBuffer(d->swapchain, 0, &W32_IID_ID3D11Texture2D, (void **)&backbuf);
     if (FAILED(hr) || !backbuf) return 0;
 
     hr = ID3D11Device_CreateRenderTargetView(d->device, (ID3D11Resource *)backbuf, NULL, &d->rtv);
@@ -121,7 +183,7 @@ static int create_targets(w32_d3d_dev *d, int32_t w, int32_t h) {
 
 uint32_t w32_d3d11_create(uint64_t hwnd_u64, uint8_t vsync) {
     HWND hwnd = (HWND)(uintptr_t)hwnd_u64;
-    if (!hwnd) return 0;
+    if (!hwnd || !ensure_d3d11_api()) return 0;
 
     int slot = -1;
     for (int i = 0; i < W32_MAX_D3D_DEVS; i++) {
@@ -154,14 +216,14 @@ uint32_t w32_d3d11_create(uint64_t hwnd_u64, uint8_t vsync) {
     w32_d3d_dev *d = &g_devs[slot];
     memset(d, 0, sizeof(*d));
 
-    HRESULT hr = D3D11CreateDeviceAndSwapChain(
+    HRESULT hr = g_d3d_api.create_device_and_swap_chain(
         NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0,
         levels, 3, D3D11_SDK_VERSION,
         &scd, &d->swapchain, &d->device, &chosen, &d->ctx
     );
     if (FAILED(hr)) {
         /* Fallback to WARP software rasterizer for headless / VM environments. */
-        hr = D3D11CreateDeviceAndSwapChain(
+        hr = g_d3d_api.create_device_and_swap_chain(
             NULL, D3D_DRIVER_TYPE_WARP, NULL, 0,
             levels, 3, D3D11_SDK_VERSION,
             &scd, &d->swapchain, &d->device, &chosen, &d->ctx
@@ -214,7 +276,7 @@ uint8_t w32_d3d11_adapter_name(uint32_t dev_id, gs_rref out) {
     if (!d) return 0;
 
     IDXGIDevice *dxgi_dev = NULL;
-    if (FAILED(ID3D11Device_QueryInterface(d->device, &IID_IDXGIDevice, (void **)&dxgi_dev)) || !dxgi_dev) {
+    if (FAILED(ID3D11Device_QueryInterface(d->device, &W32_IID_IDXGIDevice, (void **)&dxgi_dev)) || !dxgi_dev) {
         return 0;
     }
     IDXGIAdapter *adapter = NULL;
@@ -281,7 +343,7 @@ uint32_t w32_d3d11_create_pipeline(
     gs_rref out_error
 ) {
     w32_d3d_dev *d = get_dev(dev_id);
-    if (!d || !hlsl.data || hlsl.len <= 0) return 0;
+    if (!d || !hlsl.data || hlsl.len <= 0 || !ensure_d3dcompiler_api()) return 0;
 
     int slot = -1;
     for (int i = 0; i < W32_MAX_D3D_PIPES; i++) {
@@ -298,7 +360,7 @@ uint32_t w32_d3d11_create_pipeline(
     }
 
     ID3DBlob *vs_blob = NULL, *ps_blob = NULL, *err_blob = NULL;
-    HRESULT hr = D3DCompile(
+    HRESULT hr = g_d3d_api.compile(
         hlsl.data, (SIZE_T)hlsl.len, "win32_goose.hlsl",
         NULL, NULL, vs_name, "vs_4_0", 0, 0, &vs_blob, &err_blob
     );
@@ -313,7 +375,7 @@ uint32_t w32_d3d11_create_pipeline(
     }
     if (err_blob) { ID3D10Blob_Release(err_blob); err_blob = NULL; }
 
-    hr = D3DCompile(
+    hr = g_d3d_api.compile(
         hlsl.data, (SIZE_T)hlsl.len, "win32_goose.hlsl",
         NULL, NULL, ps_name, "ps_4_0", 0, 0, &ps_blob, &err_blob
     );
@@ -557,7 +619,7 @@ uint8_t w32_d3d11_readback_pixel(uint32_t dev_id, int32_t x, int32_t y, uint32_t
     if (!d || !out_rgba || x < 0 || y < 0 || x >= d->width || y >= d->height) return 0;
 
     ID3D11Texture2D *backbuf = NULL;
-    if (FAILED(IDXGISwapChain_GetBuffer(d->swapchain, 0, &IID_ID3D11Texture2D, (void **)&backbuf)) || !backbuf) {
+    if (FAILED(IDXGISwapChain_GetBuffer(d->swapchain, 0, &W32_IID_ID3D11Texture2D, (void **)&backbuf)) || !backbuf) {
         return 0;
     }
 
@@ -623,7 +685,7 @@ uint32_t w32_d3d11_create_pipeline_textured(
     gs_rref out_error
 ) {
     w32_d3d_dev *d = get_dev(dev_id);
-    if (!d || !hlsl.data || hlsl.len <= 0) return 0;
+    if (!d || !hlsl.data || hlsl.len <= 0 || !ensure_d3dcompiler_api()) return 0;
 
     int slot = -1;
     for (int i = 0; i < W32_MAX_D3D_PIPES; i++) {
@@ -640,7 +702,7 @@ uint32_t w32_d3d11_create_pipeline_textured(
     }
 
     ID3DBlob *vs_blob = NULL, *ps_blob = NULL, *err_blob = NULL;
-    HRESULT hr = D3DCompile(hlsl.data, (SIZE_T)hlsl.len, "win32_goose_tex.hlsl", NULL, NULL, vs_name, "vs_4_0", 0, 0, &vs_blob, &err_blob);
+    HRESULT hr = g_d3d_api.compile(hlsl.data, (SIZE_T)hlsl.len, "win32_goose_tex.hlsl", NULL, NULL, vs_name, "vs_4_0", 0, 0, &vs_blob, &err_blob);
     if (FAILED(hr) || !vs_blob) {
         if (err_blob) {
             gs_bld_append(out_error, ID3D10Blob_GetBufferPointer(err_blob), (int64_t)ID3D10Blob_GetBufferSize(err_blob));
@@ -652,7 +714,7 @@ uint32_t w32_d3d11_create_pipeline_textured(
     }
     if (err_blob) { ID3D10Blob_Release(err_blob); err_blob = NULL; }
 
-    hr = D3DCompile(hlsl.data, (SIZE_T)hlsl.len, "win32_goose_tex.hlsl", NULL, NULL, ps_name, "ps_4_0", 0, 0, &ps_blob, &err_blob);
+    hr = g_d3d_api.compile(hlsl.data, (SIZE_T)hlsl.len, "win32_goose_tex.hlsl", NULL, NULL, ps_name, "ps_4_0", 0, 0, &ps_blob, &err_blob);
     free(vs_name);
     free(ps_name);
     if (FAILED(hr) || !ps_blob) {

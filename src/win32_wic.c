@@ -5,6 +5,20 @@
 #include "win32_internal.h"
 #include <wincodec.h>
 
+/* Inline WIC GUIDs so windowscodecs.lib import is unnecessary (COM loads windowscodecs.dll on demand). */
+static const CLSID W32_CLSID_WICImagingFactory =
+    { 0xcacaf262, 0x9370, 0x4615, { 0xa1, 0x3b, 0x9f, 0x55, 0x39, 0xda, 0x4c, 0x0a } };
+static const IID W32_IID_IWICImagingFactory =
+    { 0xec5ec8a9, 0xc395, 0x4314, { 0x9c, 0x77, 0x54, 0xd7, 0xa9, 0x35, 0xff, 0x70 } };
+static const GUID W32_GUID_WICPixelFormat32bppBGRA =
+    { 0x6fddc324, 0x4e03, 0x4bfe, { 0xb1, 0x85, 0x3d, 0x77, 0x76, 0x8d, 0xc9, 0x0f } };
+static const GUID W32_GUID_WICPixelFormat32bppRGBA =
+    { 0xf5c7ad2d, 0x6a8d, 0x43dd, { 0xa7, 0xa8, 0xa2, 0x99, 0x35, 0x26, 0x1a, 0xe9 } };
+static const GUID W32_GUID_ContainerFormatPng =
+    { 0x1b7cfaf4, 0x713f, 0x473c, { 0xbb, 0xcd, 0x61, 0x37, 0x42, 0x5f, 0xae, 0xaf } };
+static const GUID W32_GUID_ContainerFormatBmp =
+    { 0x0af1d87e, 0xfcfe, 0x4188, { 0xbd, 0xeb, 0xa7, 0x90, 0x64, 0x71, 0xcb, 0xe3 } };
+
 static int g_wic_com_inited = 0;
 
 static int wic_ensure_com(void) {
@@ -33,7 +47,7 @@ static uint8_t wic_load_fmt(
 
     IWICImagingFactory *factory = NULL;
     HRESULT hr = CoCreateInstance(
-        &CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, &IID_IWICImagingFactory, (void **)&factory
+        &W32_CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, &W32_IID_IWICImagingFactory, (void **)&factory
     );
     if (FAILED(hr) || !factory) {
         w32_wide_free(&wpath);
@@ -92,11 +106,11 @@ static uint8_t wic_load_fmt(
 }
 
 uint8_t w32_image_load_bgra(w32_bytes path, gs_rref out_pixels_u32, int32_t *out_w, int32_t *out_h) {
-    return wic_load_fmt(path, &GUID_WICPixelFormat32bppBGRA, out_pixels_u32, out_w, out_h);
+    return wic_load_fmt(path, &W32_GUID_WICPixelFormat32bppBGRA, out_pixels_u32, out_w, out_h);
 }
 
 uint8_t w32_image_load_rgba(w32_bytes path, gs_rref out_pixels_u32, int32_t *out_w, int32_t *out_h) {
-    return wic_load_fmt(path, &GUID_WICPixelFormat32bppRGBA, out_pixels_u32, out_w, out_h);
+    return wic_load_fmt(path, &W32_GUID_WICPixelFormat32bppRGBA, out_pixels_u32, out_w, out_h);
 }
 
 static uint8_t wic_save_fmt(
@@ -119,7 +133,7 @@ static uint8_t wic_save_fmt(
 
     IWICImagingFactory *factory = NULL;
     HRESULT hr = CoCreateInstance(
-        &CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, &IID_IWICImagingFactory, (void **)&factory
+        &W32_CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, &W32_IID_IWICImagingFactory, (void **)&factory
     );
     if (FAILED(hr) || !factory) {
         w32_wide_free(&wpath);
@@ -136,11 +150,11 @@ static uint8_t wic_save_fmt(
             if (SUCCEEDED(IWICImagingFactory_CreateEncoder(factory, container_format, NULL, &encoder)) && encoder) {
                 if (SUCCEEDED(IWICBitmapEncoder_Initialize(encoder, (IStream *)stream, WICBitmapEncoderNoCache))) {
                     if (SUCCEEDED(IWICBitmapEncoder_CreateNewFrame(encoder, &frame, NULL)) && frame) {
-                        WICPixelFormatGUID pf = GUID_WICPixelFormat32bppBGRA;
+                        WICPixelFormatGUID pf = W32_GUID_WICPixelFormat32bppBGRA;
                         if (SUCCEEDED(IWICBitmapFrameEncode_Initialize(frame, NULL)) &&
                             SUCCEEDED(IWICBitmapFrameEncode_SetSize(frame, (UINT)w, (UINT)h)) &&
                             SUCCEEDED(IWICBitmapFrameEncode_SetPixelFormat(frame, &pf)) &&
-                            IsEqualGUID(&pf, &GUID_WICPixelFormat32bppBGRA) &&
+                            IsEqualGUID(&pf, &W32_GUID_WICPixelFormat32bppBGRA) &&
                             SUCCEEDED(IWICBitmapFrameEncode_WritePixels(
                                 frame, (UINT)h, (UINT)((uint64_t)w * 4u), (UINT)(pixel_count * 4u),
                                 (BYTE *)pixels_bgra.data)) &&
@@ -163,9 +177,9 @@ static uint8_t wic_save_fmt(
 }
 
 uint8_t w32_image_save_png(w32_bytes path, w32_u32_slice pixels_bgra, int32_t w, int32_t h) {
-    return wic_save_fmt(path, &GUID_ContainerFormatPng, pixels_bgra, w, h);
+    return wic_save_fmt(path, &W32_GUID_ContainerFormatPng, pixels_bgra, w, h);
 }
 
 uint8_t w32_image_save_bmp(w32_bytes path, w32_u32_slice pixels_bgra, int32_t w, int32_t h) {
-    return wic_save_fmt(path, &GUID_ContainerFormatBmp, pixels_bgra, w, h);
+    return wic_save_fmt(path, &W32_GUID_ContainerFormatBmp, pixels_bgra, w, h);
 }

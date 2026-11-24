@@ -24,7 +24,37 @@ static wchar_t *w32_build_filter(w32_bytes filter) {
     return buf;
 }
 
-/* ---- Open / Save File Dialogs (comdlg32) --------------------------------- */
+/* ---- Open / Save File Dialogs (comdlg32 lazy-loaded) -------------------- */
+
+typedef BOOL (APIENTRY *pfn_GetOpenFileNameW)(LPOPENFILENAMEW);
+typedef BOOL (APIENTRY *pfn_GetSaveFileNameW)(LPOPENFILENAMEW);
+typedef BOOL (APIENTRY *pfn_ChooseColorW)(LPCHOOSECOLORW);
+
+static struct {
+    int tried;
+    HMODULE mod;
+    pfn_GetOpenFileNameW get_open_file_name;
+    pfn_GetSaveFileNameW get_save_file_name;
+    pfn_ChooseColorW choose_color;
+} g_comdlg32;
+
+static int ensure_comdlg32(void) {
+    if (g_comdlg32.get_open_file_name && g_comdlg32.get_save_file_name && g_comdlg32.choose_color) {
+        return 1;
+    }
+    if (g_comdlg32.tried) return 0;
+    g_comdlg32.tried = 1;
+    g_comdlg32.mod = LoadLibraryW(L"comdlg32.dll");
+    if (g_comdlg32.mod) {
+        g_comdlg32.get_open_file_name =
+            (pfn_GetOpenFileNameW)(uintptr_t)GetProcAddress(g_comdlg32.mod, "GetOpenFileNameW");
+        g_comdlg32.get_save_file_name =
+            (pfn_GetSaveFileNameW)(uintptr_t)GetProcAddress(g_comdlg32.mod, "GetSaveFileNameW");
+        g_comdlg32.choose_color =
+            (pfn_ChooseColorW)(uintptr_t)GetProcAddress(g_comdlg32.mod, "ChooseColorW");
+    }
+    return (g_comdlg32.get_open_file_name && g_comdlg32.get_save_file_name && g_comdlg32.choose_color) ? 1 : 0;
+}
 
 #define W32_PATH_BUF_CAP 4096
 
@@ -35,6 +65,7 @@ uint8_t w32_open_file_dialog(
     w32_bytes default_ext,
     gs_rref out_path
 ) {
+    if (!ensure_comdlg32() || !g_comdlg32.get_open_file_name) return 0;
     wchar_t *path_buf = (wchar_t *)calloc(W32_PATH_BUF_CAP, sizeof(wchar_t));
     if (!path_buf) return 0;
 
@@ -61,7 +92,7 @@ uint8_t w32_open_file_dialog(
     ofn.lpstrDefExt = wext.len > 0 ? wext.ptr : NULL;
     ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
 
-    BOOL ok = GetOpenFileNameW(&ofn);
+    BOOL ok = g_comdlg32.get_open_file_name(&ofn);
     uint8_t result = 0;
     if (ok) {
         result = w32_append_wide_as_utf8(path_buf, -1, out_path);
@@ -82,6 +113,7 @@ uint8_t w32_save_file_dialog(
     w32_bytes initial_name,
     gs_rref out_path
 ) {
+    if (!ensure_comdlg32() || !g_comdlg32.get_save_file_name) return 0;
     wchar_t *path_buf = (wchar_t *)calloc(W32_PATH_BUF_CAP, sizeof(wchar_t));
     if (!path_buf) return 0;
 
@@ -120,7 +152,7 @@ uint8_t w32_save_file_dialog(
     ofn.lpstrDefExt = wext.len > 0 ? wext.ptr : NULL;
     ofn.Flags = OFN_EXPLORER | OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
 
-    BOOL ok = GetSaveFileNameW(&ofn);
+    BOOL ok = g_comdlg32.get_save_file_name(&ofn);
     uint8_t result = 0;
     if (ok) {
         result = w32_append_wide_as_utf8(path_buf, -1, out_path);
@@ -196,6 +228,7 @@ static COLORREF g_custom_colors[16] = {
 };
 
 uint8_t w32_choose_color_dialog(uint64_t owner, uint32_t initial_color, uint32_t *out_color) {
+    if (!ensure_comdlg32() || !g_comdlg32.choose_color) return 0;
     CHOOSECOLORW cc;
     memset(&cc, 0, sizeof(cc));
     cc.lStructSize = sizeof(cc);
@@ -204,7 +237,7 @@ uint8_t w32_choose_color_dialog(uint64_t owner, uint32_t initial_color, uint32_t
     cc.lpCustColors = g_custom_colors;
     cc.Flags = CC_FULLOPEN | CC_RGBINIT;
 
-    if (!ChooseColorW(&cc)) return 0;
+    if (!g_comdlg32.choose_color(&cc)) return 0;
     if (out_color) *out_color = (uint32_t)cc.rgbResult;
     return 1;
 }

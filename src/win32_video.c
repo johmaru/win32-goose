@@ -7,19 +7,72 @@
 #include <mfreadwrite.h>
 #include <propvarutil.h>
 
+typedef HRESULT (STDAPICALLTYPE *pfn_MFStartup)(ULONG, DWORD);
+typedef HRESULT (STDAPICALLTYPE *pfn_MFShutdown)(void);
+typedef HRESULT (STDAPICALLTYPE *pfn_MFCreateAttributes)(IMFAttributes **, UINT32);
+typedef HRESULT (STDAPICALLTYPE *pfn_MFCreateMediaType)(IMFMediaType **);
+typedef HRESULT (STDAPICALLTYPE *pfn_MFGetStrideForBitmapInfoHeader)(DWORD, DWORD, LONG *);
+typedef HRESULT (STDAPICALLTYPE *pfn_MFCreateSourceReaderFromURL)(
+    LPCWSTR, IMFAttributes *, IMFSourceReader **
+);
+
+static struct {
+    int tried;
+    HMODULE h_mfplat;
+    HMODULE h_mfrw;
+    pfn_MFStartup startup;
+    pfn_MFShutdown shutdown;
+    pfn_MFCreateAttributes create_attributes;
+    pfn_MFCreateMediaType create_media_type;
+    pfn_MFGetStrideForBitmapInfoHeader get_stride;
+    pfn_MFCreateSourceReaderFromURL create_source_reader;
+} g_mf_api;
+
+static int ensure_mf_api(void) {
+    if (g_mf_api.startup && g_mf_api.shutdown && g_mf_api.create_attributes &&
+        g_mf_api.create_media_type && g_mf_api.create_source_reader) {
+        return 1;
+    }
+    if (g_mf_api.tried) return 0;
+    g_mf_api.tried = 1;
+    g_mf_api.h_mfplat = LoadLibraryW(L"mfplat.dll");
+    g_mf_api.h_mfrw = LoadLibraryW(L"mfreadwrite.dll");
+    if (g_mf_api.h_mfplat) {
+        g_mf_api.startup = (pfn_MFStartup)(uintptr_t)GetProcAddress(g_mf_api.h_mfplat, "MFStartup");
+        g_mf_api.shutdown = (pfn_MFShutdown)(uintptr_t)GetProcAddress(g_mf_api.h_mfplat, "MFShutdown");
+        g_mf_api.create_attributes =
+            (pfn_MFCreateAttributes)(uintptr_t)GetProcAddress(g_mf_api.h_mfplat, "MFCreateAttributes");
+        g_mf_api.create_media_type =
+            (pfn_MFCreateMediaType)(uintptr_t)GetProcAddress(g_mf_api.h_mfplat, "MFCreateMediaType");
+        g_mf_api.get_stride =
+            (pfn_MFGetStrideForBitmapInfoHeader)(uintptr_t)GetProcAddress(
+                g_mf_api.h_mfplat, "MFGetStrideForBitmapInfoHeader"
+            );
+    }
+    if (g_mf_api.h_mfrw) {
+        g_mf_api.create_source_reader =
+            (pfn_MFCreateSourceReaderFromURL)(uintptr_t)GetProcAddress(
+                g_mf_api.h_mfrw, "MFCreateSourceReaderFromURL"
+            );
+    }
+    return (g_mf_api.startup && g_mf_api.shutdown && g_mf_api.create_attributes &&
+            g_mf_api.create_media_type && g_mf_api.create_source_reader) ? 1 : 0;
+}
+
 static int g_mf_started = 0;
 
 uint8_t w32_mf_startup(void) {
     if (g_mf_started) return 1;
+    if (!ensure_mf_api()) return 0;
     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
-    if (FAILED(MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET))) return 0;
+    if (FAILED(g_mf_api.startup(MF_VERSION, MFSTARTUP_NOSOCKET))) return 0;
     g_mf_started = 1;
     return 1;
 }
 
 void w32_mf_shutdown(void) {
     if (!g_mf_started) return;
-    MFShutdown();
+    if (g_mf_api.shutdown) g_mf_api.shutdown();
     g_mf_started = 0;
 }
 
@@ -58,20 +111,20 @@ uint32_t w32_video_open(w32_bytes path, w32_video_info *out_info) {
     }
 
     IMFAttributes *attrs = NULL;
-    MFCreateAttributes(&attrs, 1);
+    g_mf_api.create_attributes(&attrs, 1);
     if (attrs) {
         IMFAttributes_SetUINT32(attrs, &MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE);
     }
 
     IMFSourceReader *reader = NULL;
-    HRESULT hr = MFCreateSourceReaderFromURL(wpath.ptr, attrs, &reader);
+    HRESULT hr = g_mf_api.create_source_reader(wpath.ptr, attrs, &reader);
     if (attrs) IMFAttributes_Release(attrs);
     w32_wide_free(&wpath);
     if (FAILED(hr) || !reader) return 0;
 
     /* Ask Media Foundation to convert decoded video frames to RGB32 (matching dib.goose u32[:]). */
     IMFMediaType *out_type = NULL;
-    hr = MFCreateMediaType(&out_type);
+    hr = g_mf_api.create_media_type(&out_type);
     if (SUCCEEDED(hr) && out_type) {
         IMFMediaType_SetGUID(out_type, &MF_MT_MAJOR_TYPE, &MFMediaType_Video);
         IMFMediaType_SetGUID(out_type, &MF_MT_SUBTYPE, &MFVideoFormat_RGB32);
@@ -107,7 +160,8 @@ uint32_t w32_video_open(w32_bytes path, w32_video_info *out_info) {
     }
     if (stride == 0 && width > 0) {
         LONG calc_stride = 0;
-        if (SUCCEEDED(MFGetStrideForBitmapInfoHeader(BI_RGB, width, &calc_stride)) && calc_stride != 0) {
+        if (g_mf_api.get_stride &&
+            SUCCEEDED(g_mf_api.get_stride(BI_RGB, width, &calc_stride)) && calc_stride != 0) {
             stride = (int32_t)calc_stride;
         } else {
             stride = (int32_t)(width * 4u);

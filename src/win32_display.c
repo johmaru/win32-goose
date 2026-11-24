@@ -3,6 +3,24 @@
 #include "win32_internal.h"
 #include <shellscalingapi.h>
 
+typedef HRESULT (WINAPI *pfn_GetDpiForMonitor)(HMONITOR, MONITOR_DPI_TYPE, UINT *, UINT *);
+
+static struct {
+    int tried;
+    HMODULE mod;
+    pfn_GetDpiForMonitor get_dpi_for_monitor;
+} g_shcore;
+
+static void ensure_shcore_dpi(void) {
+    if (g_shcore.tried) return;
+    g_shcore.tried = 1;
+    g_shcore.mod = LoadLibraryW(L"shcore.dll");
+    if (g_shcore.mod) {
+        g_shcore.get_dpi_for_monitor =
+            (pfn_GetDpiForMonitor)(uintptr_t)GetProcAddress(g_shcore.mod, "GetDpiForMonitor");
+    }
+}
+
 #define W32_MAX_MONITORS 32
 
 typedef struct {
@@ -53,7 +71,9 @@ uint8_t w32_get_monitor_info(int32_t index, w32_monitor_info *out, gs_rref out_d
     out->is_primary = (mi.dwFlags & MONITORINFOF_PRIMARY) ? 1 : 0;
 
     UINT dx = 96, dy = 96;
-    if (FAILED(GetDpiForMonitor(list.handles[index], MDT_EFFECTIVE_DPI, &dx, &dy))) {
+    ensure_shcore_dpi();
+    if (!g_shcore.get_dpi_for_monitor ||
+        FAILED(g_shcore.get_dpi_for_monitor(list.handles[index], MDT_EFFECTIVE_DPI, &dx, &dy))) {
         dx = 96;
         dy = 96;
     }

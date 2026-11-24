@@ -14,7 +14,36 @@ static const GUID W32_IID_ID2D1Factory =
 static const GUID W32_IID_IDWriteFactory =
     { 0xb859ee5a, 0xd838, 0x4b5b, { 0xa2, 0xe8, 0x1a, 0xdc, 0x7d, 0x93, 0xdb, 0x48 } };
 
-HRESULT WINAPI DWriteCreateFactory(int factoryType, REFIID iid, void **factory);
+typedef HRESULT (WINAPI *pfn_D2D1CreateFactory)(
+    D2D1_FACTORY_TYPE, REFIID, const D2D1_FACTORY_OPTIONS *, void **
+);
+typedef HRESULT (WINAPI *pfn_DWriteCreateFactory)(int, REFIID, void **);
+
+static struct {
+    int tried;
+    HMODULE h_d2d1;
+    HMODULE h_dwrite;
+    pfn_D2D1CreateFactory create_d2d_factory;
+    pfn_DWriteCreateFactory create_dwrite_factory;
+} g_d2d_api;
+
+static int ensure_d2d_api(void) {
+    if (g_d2d_api.create_d2d_factory && g_d2d_api.create_dwrite_factory) return 1;
+    if (g_d2d_api.tried) return 0;
+    g_d2d_api.tried = 1;
+
+    g_d2d_api.h_d2d1 = LoadLibraryW(L"d2d1.dll");
+    g_d2d_api.h_dwrite = LoadLibraryW(L"dwrite.dll");
+    if (g_d2d_api.h_d2d1) {
+        g_d2d_api.create_d2d_factory =
+            (pfn_D2D1CreateFactory)(uintptr_t)GetProcAddress(g_d2d_api.h_d2d1, "D2D1CreateFactory");
+    }
+    if (g_d2d_api.h_dwrite) {
+        g_d2d_api.create_dwrite_factory =
+            (pfn_DWriteCreateFactory)(uintptr_t)GetProcAddress(g_d2d_api.h_dwrite, "DWriteCreateFactory");
+    }
+    return (g_d2d_api.create_d2d_factory && g_d2d_api.create_dwrite_factory) ? 1 : 0;
+}
 
 /* Generic COM vtable helper: index into interface's vtable array. */
 static inline void **com_vtbl(void *obj) {
@@ -230,7 +259,7 @@ static void *use_brush(w32_d2d_target *t, w32_colorf c) {
 
 uint32_t w32_d2d_create(uint64_t hwnd_u64, uint8_t vsync) {
     HWND hwnd = (HWND)(uintptr_t)hwnd_u64;
-    if (!hwnd) return 0;
+    if (!hwnd || !ensure_d2d_api()) return 0;
 
     int slot = -1;
     for (int i = 0; i < W32_MAX_D2D_TARGETS; i++) {
@@ -243,7 +272,7 @@ uint32_t w32_d2d_create(uint64_t hwnd_u64, uint8_t vsync) {
     t->hwnd = hwnd;
     t->vsync = vsync ? 1 : 0;
 
-    HRESULT hr = D2D1CreateFactory(
+    HRESULT hr = g_d2d_api.create_d2d_factory(
         D2D1_FACTORY_TYPE_SINGLE_THREADED, &W32_IID_ID2D1Factory, NULL, &t->factory
     );
     if (FAILED(hr) || !t->factory) {
@@ -252,7 +281,7 @@ uint32_t w32_d2d_create(uint64_t hwnd_u64, uint8_t vsync) {
     }
 
     /* DWRITE_FACTORY_TYPE_SHARED = 0 */
-    hr = DWriteCreateFactory(0, &W32_IID_IDWriteFactory, &t->dw_factory);
+    hr = g_d2d_api.create_dwrite_factory(0, &W32_IID_IDWriteFactory, &t->dw_factory);
     if (FAILED(hr) || !t->dw_factory) {
         com_release(t->factory);
         memset(t, 0, sizeof(*t));

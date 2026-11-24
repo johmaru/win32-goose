@@ -5,7 +5,11 @@
 // that require C callbacks (WndProc / DlgProc), pointers inside Win32 structs
 // (WNDCLASSEXW / OPENFILENAMEW / CHOOSECOLORW / COM IFileOpenDialog),
 // 2-byte aligned UTF-16 buffers, or runtime builder writes live in the thin
-// C shim under src/.
+// C shim under src/. Heavy optional subsystems (Direct2D/DirectWrite, D3D11,
+// D3DCompiler, OpenGL32, Media Foundation, WIC, XInput, WinMM PlaySound,
+// ComDlg32, ComCtl32, Shcore DPI, Winsock2, WinHTTP) are loaded lazily via
+// LoadLibraryW / GetProcAddress or COM on first use so minimal GUI apps do
+// not map unused DLLs at startup.
 
 c_sources_windows = [
     "src/win32_shim.c",
@@ -16,6 +20,7 @@ c_sources_windows = [
     "src/win32_d3d11.c",
     "src/win32_d2d.c",
     "src/win32_gl.c",
+    "src/win32_gl2d.c",
     "src/win32_system.c",
     "src/win32_net.c",
     "src/win32_display.c",
@@ -32,28 +37,10 @@ c_libs_windows = [
     "gdi32",
     "kernel32",
     "advapi32",
-    "comdlg32",
-    "comctl32",
     "shell32",
-    "shcore",
     "dwmapi",
     "ole32",
-    "propsys",
-    "windowscodecs",
-    "winmm",
-    "xinput",
-    "mfplat",
-    "mfreadwrite",
     "mfuuid",
-    "d3d11",
-    "dxgi",
-    "dxguid",
-    "d3dcompiler",
-    "d2d1",
-    "dwrite",
-    "opengl32",
-    "ws2_32",
-    "winhttp",
 ];
 main_thread_only = true;
 exclude = ["examples", "test"];

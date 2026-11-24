@@ -393,6 +393,35 @@ void w32_gl_bind_vertex_buffer(uint32_t mesh_id);
 void w32_gl_draw_arrays(uint32_t mode, int32_t first, int32_t count);
 uint8_t w32_gl_readback_pixel(uint32_t ctx_id, int32_t x, int32_t y, uint32_t *out_rgba);
 
+/* OpenGL 3.3 Core 2D SDF + GPU VRAM atlas renderer (src/win32_gl2d.c). */
+uint32_t w32_gl2d_create(uint64_t hwnd, uint8_t vsync);
+void w32_gl2d_destroy(uint32_t target_id);
+uint8_t w32_gl2d_resize(uint32_t target_id, int32_t width, int32_t height);
+void w32_gl2d_begin_draw(uint32_t target_id, w32_colorf clear_color);
+uint8_t w32_gl2d_end_draw(uint32_t target_id);
+void w32_gl2d_push_clip(uint32_t target_id, float x, float y, float w, float h);
+void w32_gl2d_pop_clip(uint32_t target_id);
+void w32_gl2d_clear_text_cache(uint32_t target_id);
+void w32_gl2d_draw_line(uint32_t target_id, float x0, float y0, float x1, float y1, w32_colorf color, float stroke_width);
+void w32_gl2d_draw_rect(uint32_t target_id, float x, float y, float w, float h, w32_colorf color, float stroke_width);
+void w32_gl2d_fill_rect(uint32_t target_id, float x, float y, float w, float h, w32_colorf color);
+void w32_gl2d_draw_rounded_rect(uint32_t target_id, float x, float y, float w, float h, float r, w32_colorf color, float stroke_width);
+void w32_gl2d_fill_rounded_rect(uint32_t target_id, float x, float y, float w, float h, float r, w32_colorf color);
+void w32_gl2d_draw_ellipse(uint32_t target_id, float cx, float cy, float rx, float ry, w32_colorf color, float stroke_width);
+void w32_gl2d_fill_ellipse(uint32_t target_id, float cx, float cy, float rx, float ry, w32_colorf color);
+uint32_t w32_gl2d_create_font(uint32_t target_id, w32_bytes family, float size, int32_t weight, uint8_t italic);
+void w32_gl2d_destroy_font(uint32_t font_id);
+void w32_gl2d_draw_text(
+    uint32_t target_id,
+    w32_bytes text,
+    uint32_t font_id,
+    float x, float y, float w, float h,
+    int32_t h_align,
+    int32_t v_align,
+    w32_colorf color
+);
+uint8_t w32_gl2d_readback_pixel(uint32_t target_id, int32_t x, int32_t y, uint32_t *out_rgba);
+
 /* Storage extensions: memory-mapped files, disk/volume info, dir watch (src/win32_io.c). */
 uint32_t w32_file_map_open(uint64_t hfile, uint8_t writable, uint64_t max_size);
 int64_t w32_file_map_size(uint32_t map_id);

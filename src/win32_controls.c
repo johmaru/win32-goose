@@ -7,12 +7,30 @@
 
 /* ---- Standard Win32 Child Controls --------------------------------------- */
 
+typedef BOOL (WINAPI *pfn_InitCommonControlsEx)(const INITCOMMONCONTROLSEX *);
+
+static struct {
+    int tried;
+    HMODULE mod;
+    pfn_InitCommonControlsEx init_cc;
+} g_comctl32;
+
 uint8_t w32_init_common_controls(void) {
+    if (!g_comctl32.init_cc) {
+        if (g_comctl32.tried) return 0;
+        g_comctl32.tried = 1;
+        g_comctl32.mod = LoadLibraryW(L"comctl32.dll");
+        if (g_comctl32.mod) {
+            g_comctl32.init_cc =
+                (pfn_InitCommonControlsEx)(uintptr_t)GetProcAddress(g_comctl32.mod, "InitCommonControlsEx");
+        }
+        if (!g_comctl32.init_cc) return 0;
+    }
     INITCOMMONCONTROLSEX icc;
     icc.dwSize = sizeof(icc);
     /* ICC_WIN95_CLASSES works under both ComCtl32 v5 (no v6 manifest) and v6. */
     icc.dwICC = ICC_WIN95_CLASSES;
-    return InitCommonControlsEx(&icc) ? 1 : 0;
+    return g_comctl32.init_cc(&icc) ? 1 : 0;
 }
 
 uint64_t w32_create_control(

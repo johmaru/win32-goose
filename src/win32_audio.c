@@ -291,33 +291,56 @@ void w32_wasapi_close(uint32_t audio_id) {
     memset(s, 0, sizeof(*s));
 }
 
-/* ---- winmm PlaySound helpers --------------------------------------------- */
+/* ---- winmm PlaySound helpers (lazy-loaded from winmm.dll) --------------- */
+
+typedef BOOL (WINAPI *pfn_PlaySoundW)(LPCWSTR, HMODULE, DWORD);
+
+static struct {
+    int tried;
+    HMODULE mod;
+    pfn_PlaySoundW play_sound;
+} g_winmm_api;
+
+static int ensure_winmm_play_sound(void) {
+    if (g_winmm_api.play_sound) return 1;
+    if (g_winmm_api.tried) return 0;
+    g_winmm_api.tried = 1;
+    g_winmm_api.mod = LoadLibraryW(L"winmm.dll");
+    if (g_winmm_api.mod) {
+        g_winmm_api.play_sound = (pfn_PlaySoundW)(uintptr_t)GetProcAddress(g_winmm_api.mod, "PlaySoundW");
+    }
+    return g_winmm_api.play_sound ? 1 : 0;
+}
 
 static uint8_t *g_async_wav_buf = NULL;
 
 uint8_t w32_play_sound_file(w32_bytes path, uint8_t async_play) {
+    if (!ensure_winmm_play_sound()) return 0;
     w32_wide_buf wb;
     if (!w32_wide_init(&wb, path) || wb.len == 0) {
         w32_wide_free(&wb);
         return 0;
     }
-    PlaySoundW(NULL, NULL, 0);
+    g_winmm_api.play_sound(NULL, NULL, 0);
     free(g_async_wav_buf);
     g_async_wav_buf = NULL;
 
     DWORD flags = SND_FILENAME | (async_play ? SND_ASYNC : SND_SYNC);
-    BOOL ok = PlaySoundW(wb.ptr, NULL, flags);
+    BOOL ok = g_winmm_api.play_sound(wb.ptr, NULL, flags);
     w32_wide_free(&wb);
     return ok ? 1 : 0;
 }
 
 void w32_play_sound_stop(void) {
-    PlaySoundW(NULL, NULL, 0);
+    if (g_winmm_api.play_sound) {
+        g_winmm_api.play_sound(NULL, NULL, 0);
+    }
     free(g_async_wav_buf);
     g_async_wav_buf = NULL;
 }
 
 uint8_t w32_play_wav_bytes(w32_bytes wav_bytes, uint8_t async_play) {
+    if (!ensure_winmm_play_sound()) return 0;
     if (!wav_bytes.data || wav_bytes.len < 44) return 0;
     /* Basic RIFF/WAVE header & size validation so PlaySoundW never reads past the slice. */
     if (memcmp(wav_bytes.data, "RIFF", 4) != 0 || memcmp(wav_bytes.data + 8, "WAVE", 4) != 0) {
@@ -329,7 +352,7 @@ uint8_t w32_play_wav_bytes(w32_bytes wav_bytes, uint8_t async_play) {
         return 0;
     }
 
-    PlaySoundW(NULL, NULL, 0);
+    g_winmm_api.play_sound(NULL, NULL, 0);
     free(g_async_wav_buf);
     g_async_wav_buf = NULL;
 
@@ -338,7 +361,7 @@ uint8_t w32_play_wav_bytes(w32_bytes wav_bytes, uint8_t async_play) {
         uint8_t *copy = (uint8_t *)malloc((size_t)wav_bytes.len);
         if (!copy) return 0;
         memcpy(copy, wav_bytes.data, (size_t)wav_bytes.len);
-        if (!PlaySoundW((LPCWSTR)copy, NULL, SND_MEMORY | SND_ASYNC)) {
+        if (!g_winmm_api.play_sound((LPCWSTR)copy, NULL, SND_MEMORY | SND_ASYNC)) {
             free(copy);
             return 0;
         }
@@ -346,7 +369,7 @@ uint8_t w32_play_wav_bytes(w32_bytes wav_bytes, uint8_t async_play) {
         return 1;
     }
 
-    return PlaySoundW((LPCWSTR)wav_bytes.data, NULL, SND_MEMORY | SND_SYNC) ? 1 : 0;
+    return g_winmm_api.play_sound((LPCWSTR)wav_bytes.data, NULL, SND_MEMORY | SND_SYNC) ? 1 : 0;
 }
 
 /* ---- WASAPI input enumeration & capture/loopback stream ------------------ */

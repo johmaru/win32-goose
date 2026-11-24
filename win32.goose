@@ -20,6 +20,7 @@ import dib;
 import d3d11;
 import d2d;
 import gl;
+import gl2d;
 import system;
 import net;
 import display;
