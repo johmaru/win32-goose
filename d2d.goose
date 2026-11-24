@@ -46,6 +46,8 @@ extern fn shim_d2d_begin_draw(target_id: u32) = "w32_d2d_begin_draw";
 extern fn shim_d2d_end_draw(target_id: u32) -> bool = "w32_d2d_end_draw";
 extern fn shim_d2d_clear(target_id: u32, color: ColorF) = "w32_d2d_clear";
 extern fn shim_d2d_set_transform(target_id: u32, m11: f32, m12: f32, m21: f32, m22: f32, dx: f32, dy: f32) = "w32_d2d_set_transform";
+extern fn shim_d2d_push_clip(target_id: u32, x: f32, y: f32, w: f32, h: f32) = "w32_d2d_push_clip";
+extern fn shim_d2d_pop_clip(target_id: u32) = "w32_d2d_pop_clip";
 extern fn shim_d2d_draw_line(target_id: u32, x0: f32, y0: f32, x1: f32, y1: f32, color: ColorF, stroke_width: f32) = "w32_d2d_draw_line";
 extern fn shim_d2d_draw_rect(target_id: u32, x: f32, y: f32, w: f32, h: f32, color: ColorF, stroke_width: f32) = "w32_d2d_draw_rect";
 extern fn shim_d2d_fill_rect(target_id: u32, x: f32, y: f32, w: f32, h: f32, color: ColorF) = "w32_d2d_fill_rect";
@@ -55,8 +57,10 @@ extern fn shim_d2d_draw_ellipse(target_id: u32, cx: f32, cy: f32, rx: f32, ry: f
 extern fn shim_d2d_fill_ellipse(target_id: u32, cx: f32, cy: f32, rx: f32, ry: f32, color: ColorF) = "w32_d2d_fill_ellipse";
 extern fn shim_d2d_create_font(target_id: u32, family: const u8[:], size: f32, weight: i32, italic: bool) -> u32 = "w32_d2d_create_font";
 extern fn shim_d2d_set_font_align(font_id: u32, h_align: i32, v_align: i32) = "w32_d2d_set_font_align";
+extern fn shim_d2d_set_font_word_wrap(font_id: u32, wrap: bool) = "w32_d2d_set_font_word_wrap";
 extern fn shim_d2d_destroy_font(font_id: u32) = "w32_d2d_destroy_font";
 extern fn shim_d2d_draw_text(target_id: u32, text: const u8[:], font_id: u32, x: f32, y: f32, w: f32, h: f32, color: ColorF) = "w32_d2d_draw_text";
+extern fn shim_d2d_measure_text(target_id: u32, text: const u8[:], font_id: u32, out_w: f32&, out_h: f32&) -> bool = "w32_d2d_measure_text";
 
 fn d2d_create(win: Hwnd, vsync: bool = true) -> D2dTarget {
     return D2dTarget { id: shim_d2d_create(win.raw, vsync) };
@@ -88,6 +92,14 @@ fn set_transform(t: D2dTarget, m11: f32, m12: f32, m21: f32, m22: f32, dx: f32, 
 
 fn set_identity(t: D2dTarget) {
     shim_d2d_set_transform(t.id, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+}
+
+fn push_clip(t: D2dTarget, x: f32, y: f32, w: f32, h: f32) {
+    shim_d2d_push_clip(t.id, x, y, w, h);
+}
+
+fn pop_clip(t: D2dTarget) {
+    shim_d2d_pop_clip(t.id);
 }
 
 fn draw_line(t: D2dTarget, x0: f32, y0: f32, x1: f32, y1: f32, color: ColorF, stroke_width: f32 = 1.0) {
@@ -126,10 +138,23 @@ fn set_align(f: D2dFont, h_align: i32, v_align: i32 = D2D_VALIGN_NEAR) {
     shim_d2d_set_font_align(f.id, h_align, v_align);
 }
 
+fn set_word_wrap(f: D2dFont, wrap: bool) {
+    shim_d2d_set_font_word_wrap(f.id, wrap);
+}
+
 fn destroy(f: D2dFont) {
     shim_d2d_destroy_font(f.id);
 }
 
 fn draw_text(t: D2dTarget, text: const u8[:], font: D2dFont, x: f32, y: f32, w: f32, h: f32, color: ColorF) {
     shim_d2d_draw_text(t.id, text, font.id, x, y, w, h, color);
+}
+
+fn measure_text(t: D2dTarget, text: const u8[:], font: D2dFont) -> f32, f32 {
+    var w: f32 = 0.0;
+    var h: f32 = 0.0;
+    if !shim_d2d_measure_text(t.id, text, font.id, w, h) {
+        return 0.0, 0.0;
+    }
+    return w, h;
 }

@@ -359,6 +359,8 @@ void w32_d2d_begin_draw(uint32_t target_id);
 uint8_t w32_d2d_end_draw(uint32_t target_id);
 void w32_d2d_clear(uint32_t target_id, w32_colorf color);
 void w32_d2d_set_transform(uint32_t target_id, float m11, float m12, float m21, float m22, float dx, float dy);
+void w32_d2d_push_clip(uint32_t target_id, float x, float y, float w, float h);
+void w32_d2d_pop_clip(uint32_t target_id);
 void w32_d2d_draw_line(uint32_t target_id, float x0, float y0, float x1, float y1, w32_colorf color, float stroke_width);
 void w32_d2d_draw_rect(uint32_t target_id, float x, float y, float w, float h, w32_colorf color, float stroke_width);
 void w32_d2d_fill_rect(uint32_t target_id, float x, float y, float w, float h, w32_colorf color);
@@ -368,8 +370,10 @@ void w32_d2d_draw_ellipse(uint32_t target_id, float cx, float cy, float rx, floa
 void w32_d2d_fill_ellipse(uint32_t target_id, float cx, float cy, float rx, float ry, w32_colorf color);
 uint32_t w32_d2d_create_font(uint32_t target_id, w32_bytes family, float size, int32_t weight, uint8_t italic);
 void w32_d2d_set_font_align(uint32_t font_id, int32_t h_align, int32_t v_align);
+void w32_d2d_set_font_word_wrap(uint32_t font_id, uint8_t wrap);
 void w32_d2d_destroy_font(uint32_t font_id);
 void w32_d2d_draw_text(uint32_t target_id, w32_bytes text, uint32_t font_id, float x, float y, float w, float h, w32_colorf color);
+uint8_t w32_d2d_measure_text(uint32_t target_id, w32_bytes text, uint32_t font_id, float *out_w, float *out_h);
 
 /* OpenGL 3.3 Core (WGL) graphics shim (src/win32_gl.c). */
 uint32_t w32_gl_create(uint64_t hwnd, uint8_t vsync);

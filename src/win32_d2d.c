@@ -126,13 +126,23 @@ static void d2d_rt_draw_text(
     typedef void (STDMETHODCALLTYPE *pfn)(
         void *, const wchar_t *, UINT32, void *, const D2D1_RECT_F *, void *, D2D1_DRAW_TEXT_OPTIONS, int
     );
-    /* D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT = 4, DWRITE_MEASURING_MODE_NATURAL = 0 */
-    ((pfn)com_vtbl(rt)[27])(rt, str, len, text_format, layout_rect, brush, D2D1_DRAW_TEXT_OPTIONS_NONE, 0);
+    /* D2D1_DRAW_TEXT_OPTIONS_CLIP = 2, DWRITE_MEASURING_MODE_NATURAL = 0 */
+    ((pfn)com_vtbl(rt)[27])(rt, str, len, text_format, layout_rect, brush, D2D1_DRAW_TEXT_OPTIONS_CLIP, 0);
 }
 
 static void d2d_rt_set_transform(void *rt, const D2D1_MATRIX_3X2_F *m) {
     typedef void (STDMETHODCALLTYPE *pfn)(void *, const D2D1_MATRIX_3X2_F *);
     ((pfn)com_vtbl(rt)[30])(rt, m);
+}
+
+static void d2d_rt_push_axis_aligned_clip(void *rt, const D2D1_RECT_F *rc, D2D1_ANTIALIAS_MODE aa) {
+    typedef void (STDMETHODCALLTYPE *pfn)(void *, const D2D1_RECT_F *, D2D1_ANTIALIAS_MODE);
+    ((pfn)com_vtbl(rt)[45])(rt, rc, aa);
+}
+
+static void d2d_rt_pop_axis_aligned_clip(void *rt) {
+    typedef void (STDMETHODCALLTYPE *pfn)(void *);
+    ((pfn)com_vtbl(rt)[46])(rt);
 }
 
 static void d2d_rt_clear(void *rt, const D2D1_COLOR_F *col) {
@@ -155,7 +165,19 @@ static HRESULT d2d_hwnd_rt_resize(void *rt, const D2D1_SIZE_U *sz) {
     return ((pfn)com_vtbl(rt)[58])(rt, sz);
 }
 
-/* IDWriteFactory (slot 15 = CreateTextFormat) & IDWriteTextFormat (slot 3, 4) */
+/* IDWriteFactory (slots 15, 18), IDWriteTextFormat (slots 3..5), IDWriteTextLayout (slot 60) */
+typedef struct {
+    float left;
+    float top;
+    float width;
+    float width_including_trailing_whitespace;
+    float height;
+    float layout_width;
+    float layout_height;
+    uint32_t max_bidi_reordering_depth;
+    uint32_t line_count;
+} w32_dwrite_text_metrics;
+
 static HRESULT dwrite_create_text_format(
     void *dw_factory,
     const wchar_t *family,
@@ -172,6 +194,21 @@ static HRESULT dwrite_create_text_format(
     return ((pfn)com_vtbl(dw_factory)[15])(dw_factory, family, NULL, weight, style, stretch, size, locale, out_fmt);
 }
 
+static HRESULT dwrite_create_text_layout(
+    void *dw_factory,
+    const wchar_t *str,
+    UINT32 len,
+    void *fmt,
+    float max_w,
+    float max_h,
+    void **out_layout
+) {
+    typedef HRESULT (STDMETHODCALLTYPE *pfn)(
+        void *, const wchar_t *, UINT32, void *, float, float, void **
+    );
+    return ((pfn)com_vtbl(dw_factory)[18])(dw_factory, str, len, fmt, max_w, max_h, out_layout);
+}
+
 static HRESULT dwrite_set_text_align(void *fmt, int align) {
     typedef HRESULT (STDMETHODCALLTYPE *pfn)(void *, int);
     return ((pfn)com_vtbl(fmt)[3])(fmt, align);
@@ -180,6 +217,16 @@ static HRESULT dwrite_set_text_align(void *fmt, int align) {
 static HRESULT dwrite_set_para_align(void *fmt, int align) {
     typedef HRESULT (STDMETHODCALLTYPE *pfn)(void *, int);
     return ((pfn)com_vtbl(fmt)[4])(fmt, align);
+}
+
+static HRESULT dwrite_set_word_wrapping(void *fmt, int wrapping) {
+    typedef HRESULT (STDMETHODCALLTYPE *pfn)(void *, int);
+    return ((pfn)com_vtbl(fmt)[5])(fmt, wrapping);
+}
+
+static HRESULT dwrite_layout_get_metrics(void *layout, w32_dwrite_text_metrics *out_metrics) {
+    typedef HRESULT (STDMETHODCALLTYPE *pfn)(void *, w32_dwrite_text_metrics *);
+    return ((pfn)com_vtbl(layout)[60])(layout, out_metrics);
 }
 
 /* ---- Slot tables --------------------------------------------------------- */
@@ -191,6 +238,7 @@ typedef struct {
     int used;
     HWND hwnd;
     uint8_t vsync;
+    int clip_depth;
     void *factory;
     void *dw_factory;
     void *rt;
@@ -246,6 +294,7 @@ static int create_hwnd_target(w32_d2d_target *t) {
         t->rt = NULL;
         return 0;
     }
+    t->clip_depth = 0;
     return 1;
 }
 
@@ -320,18 +369,24 @@ void w32_d2d_begin_draw(uint32_t target_id) {
     w32_d2d_target *t = get_target(target_id);
     if (!t) return;
     if (!t->rt && !create_hwnd_target(t)) return;
+    t->clip_depth = 0;
     d2d_rt_begin_draw(t->rt);
 }
 
 uint8_t w32_d2d_end_draw(uint32_t target_id) {
     w32_d2d_target *t = get_target(target_id);
     if (!t || !t->rt) return 0;
+    while (t->clip_depth > 0) {
+        d2d_rt_pop_axis_aligned_clip(t->rt);
+        t->clip_depth--;
+    }
     HRESULT hr = d2d_rt_end_draw(t->rt);
     if (hr == (HRESULT)0x8899000C /* D2DERR_RECREATE_TARGET */) {
         com_release(t->brush);
         com_release(t->rt);
         t->brush = NULL;
         t->rt = NULL;
+        t->clip_depth = 0;
         create_hwnd_target(t);
         return 1;
     }
@@ -353,6 +408,23 @@ void w32_d2d_set_transform(uint32_t target_id, float m11, float m12, float m21, 
     m._21 = m21; m._22 = m22;
     m._31 = dx;  m._32 = dy;
     d2d_rt_set_transform(t->rt, &m);
+}
+
+void w32_d2d_push_clip(uint32_t target_id, float x, float y, float w, float h) {
+    w32_d2d_target *t = get_target(target_id);
+    if (!t || !t->rt) return;
+    if (w < 0.0f) w = 0.0f;
+    if (h < 0.0f) h = 0.0f;
+    D2D1_RECT_F rc = { x, y, x + w, y + h };
+    d2d_rt_push_axis_aligned_clip(t->rt, &rc, D2D1_ANTIALIAS_MODE_ALIASED);
+    t->clip_depth++;
+}
+
+void w32_d2d_pop_clip(uint32_t target_id) {
+    w32_d2d_target *t = get_target(target_id);
+    if (!t || !t->rt || t->clip_depth <= 0) return;
+    t->clip_depth--;
+    d2d_rt_pop_axis_aligned_clip(t->rt);
 }
 
 void w32_d2d_draw_line(uint32_t target_id, float x0, float y0, float x1, float y1, w32_colorf color, float stroke_width) {
@@ -439,6 +511,13 @@ void w32_d2d_set_font_align(uint32_t font_id, int32_t h_align, int32_t v_align) 
     dwrite_set_para_align(f->fmt, (int)v_align);
 }
 
+void w32_d2d_set_font_word_wrap(uint32_t font_id, uint8_t wrap) {
+    w32_d2d_font *f = get_font(font_id);
+    if (!f || !f->fmt) return;
+    /* 0 = DWRITE_WORD_WRAPPING_WRAP, 1 = DWRITE_WORD_WRAPPING_NO_WRAP */
+    dwrite_set_word_wrapping(f->fmt, wrap ? 0 : 1);
+}
+
 void w32_d2d_destroy_font(uint32_t font_id) {
     w32_d2d_font *f = get_font(font_id);
     if (!f) return;
@@ -462,4 +541,43 @@ void w32_d2d_draw_text(
     D2D1_RECT_F rc = { x, y, x + w, y + h };
     d2d_rt_draw_text(t->rt, wb.ptr, (UINT32)wb.len, f->fmt, &rc, use_brush(t, color));
     w32_wide_free(&wb);
+}
+
+uint8_t w32_d2d_measure_text(
+    uint32_t target_id,
+    w32_bytes text,
+    uint32_t font_id,
+    float *out_w,
+    float *out_h
+) {
+    w32_d2d_target *t = get_target(target_id);
+    w32_d2d_font *f = get_font(font_id);
+    if (out_w) *out_w = 0.0f;
+    if (out_h) *out_h = 0.0f;
+    if (!t || !t->dw_factory || !f || !f->fmt) return 0;
+
+    w32_wide_buf wb;
+    if (!w32_wide_init(&wb, text)) return 0;
+    void *layout = NULL;
+    HRESULT hr = dwrite_create_text_layout(
+        t->dw_factory,
+        wb.ptr ? wb.ptr : L"",
+        (UINT32)wb.len,
+        f->fmt,
+        1000000.0f,
+        1000000.0f,
+        &layout
+    );
+    w32_wide_free(&wb);
+    if (FAILED(hr) || !layout) return 0;
+
+    w32_dwrite_text_metrics m;
+    memset(&m, 0, sizeof(m));
+    hr = dwrite_layout_get_metrics(layout, &m);
+    com_release(layout);
+    if (FAILED(hr)) return 0;
+
+    if (out_w) *out_w = m.width_including_trailing_whitespace;
+    if (out_h) *out_h = m.height;
+    return 1;
 }

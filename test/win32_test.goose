@@ -444,15 +444,29 @@ float4 ps_main(PSIn p) : SV_TARGET { return p.col; }
     let font = d2d.create_font("Segoe UI", 16.0, 600);
     assert(font.is_valid());
     font.set_align(win32::D2D_ALIGN_CENTER, win32::D2D_VALIGN_CENTER);
+    font.set_word_wrap(false);
+
+    let w_ascii, h_ascii = d2d.measure_text("Direct2D", font);
+    let w_trail, _h_tr = d2d.measure_text("Direct2D   ", font);
+    let w_jp, h_jp = d2d.measure_text("Direct2D 日本語", font);
+    let w_empty, _h_em = d2d.measure_text("", font);
+    assert(w_ascii > 30.0 && h_ascii > 10.0);
+    assert(w_trail > w_ascii);
+    assert(w_jp > w_ascii && h_jp > 10.0);
+    assert(w_empty == 0.0);
 
     d2d.begin_draw();
     d2d.set_identity();
     d2d.clear(win32::colorf_rgb(15, 23, 42));
     d2d.fill_rounded_rect(8.0, 8.0, 112.0, 112.0, 12.0, 12.0, win32::colorf(0.2, 0.4, 0.8, 0.9));
     d2d.draw_rounded_rect(8.0, 8.0, 112.0, 112.0, 12.0, 12.0, win32::colorf(1.0, 1.0, 1.0, 1.0), 2.0);
+    d2d.push_clip(8.0, 8.0, 112.0, 112.0);
+    d2d.push_clip(16.0, 16.0, 96.0, 96.0);
     d2d.fill_ellipse(64.0, 64.0, 24.0, 24.0, win32::colorf(0.9, 0.8, 0.1, 0.8));
     d2d.draw_line(0.0, 0.0, 128.0, 128.0, win32::colorf(1.0, 1.0, 1.0, 0.5), 1.5);
     d2d.draw_text("Direct2D 日本語", font, 0.0, 0.0, 128.0, 128.0, win32::colorf(1.0, 1.0, 1.0, 1.0));
+    d2d.pop_clip();
+    d2d.pop_clip();
     assert(d2d.end_draw());
     assert(d2d.resize(160, 120));
 
