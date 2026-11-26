@@ -1319,7 +1319,13 @@ static void wv_flush_pending_cmds(wv_slot *sl, int idx) {
 static HRESULT STDMETHODCALLTYPE wv_on_controller_created(void *This, HRESULT err, void *ctrl) {
     wv_handler *h = (wv_handler *)This;
     wv_slot *sl = wv_validate_handler_slot(h);
-    if (!sl) return S_OK;
+    if (!sl) {
+        if (SUCCEEDED(err) && ctrl) {
+            typedef HRESULT (STDMETHODCALLTYPE *pfn_close)(void *);
+            ((pfn_close)wv_vtbl(ctrl)[24])(ctrl);
+        }
+        return S_OK;
+    }
 
     if (FAILED(err) || !ctrl) {
         sl->failed = 1;
@@ -1552,6 +1558,13 @@ void w32_webview_on_parent_destroy(HWND hwnd) {
     }
 }
 
+static int wv_env_has_active_slots(int eidx) {
+    for (int i = 0; i < W32_WV_MAX_INSTANCES; i++) {
+        if (g_slots[i].used && g_slots[i].env_idx == eidx) return 1;
+    }
+    return 0;
+}
+
 uint32_t w32_webview_create(
     uint64_t parent_hwnd_u64,
     int32_t x,
@@ -1648,6 +1661,7 @@ uint32_t w32_webview_create(
 
     int eidx = -1;
     int free_e = -1;
+    int failed_e = -1;
     for (int i = 0; i < W32_WV_MAX_ENVS; i++) {
         if (g_envs[i].used && !g_envs[i].failed &&
             wv_wide_eq(g_envs[i].user_data_dir, udir) &&
@@ -1656,6 +1670,9 @@ uint32_t w32_webview_create(
             break;
         }
         if (!g_envs[i].used && free_e < 0) free_e = i;
+        if (g_envs[i].used && g_envs[i].failed && !g_envs[i].env && failed_e < 0 && !wv_env_has_active_slots(i)) {
+            failed_e = i;
+        }
     }
 
     if (eidx >= 0) {
@@ -1666,6 +1683,13 @@ uint32_t w32_webview_create(
             wv_start_controller_for_slot(idx, eidx);
         }
         return id;
+    }
+
+    if (free_e < 0 && failed_e >= 0) {
+        free(g_envs[failed_e].user_data_dir);
+        free(g_envs[failed_e].additional_args);
+        memset(&g_envs[failed_e], 0, sizeof(g_envs[failed_e]));
+        free_e = failed_e;
     }
 
     if (free_e < 0) {
