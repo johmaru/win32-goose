@@ -30,6 +30,7 @@ import game;
 import audio;
 import video;
 import wic;
+import webview;
 
 // --- Thin C shim bindings (src/win32_shim.c) --------------------------------
 
@@ -69,6 +70,7 @@ extern fn shim_clip_cursor_window(hwnd: u64) -> bool = "w32_clip_cursor_window";
 extern fn unclip_cursor() -> bool = "w32_unclip_cursor";
 extern fn shim_set_borderless_fullscreen(hwnd: u64, enable: bool) -> bool = "w32_set_borderless_fullscreen";
 extern fn shim_enable_raw_mouse(hwnd: u64, enable: bool) -> bool = "w32_enable_raw_mouse";
+extern fn shim_set_window_suppress_erase(hwnd: u64, suppress: bool) -> bool = "w32_set_window_suppress_erase";
 
 // --- Convenience functions --------------------------------------------------
 
@@ -259,6 +261,14 @@ fn foreground_window() -> Hwnd {
 
 fn set_foreground(w: Hwnd) -> bool {
     return SetForegroundWindow(w.raw) != 0;
+}
+
+fn set_focus(w: Hwnd) -> Hwnd {
+    return Hwnd { raw: SetFocus(w.raw) };
+}
+
+fn set_suppress_erase(w: Hwnd, suppress: bool) -> bool {
+    return shim_set_window_suppress_erase(w.raw, suppress);
 }
 
 fn set_borderless_fullscreen(w: Hwnd, enable: bool) -> bool {

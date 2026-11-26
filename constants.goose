@@ -51,6 +51,7 @@ let SW_RESTORE: i32 = 9;
 
 // Window messages (WM_*).
 let WM_DESTROY: u32 = 0x0002;
+let WM_MOVE: u32 = 0x0003;
 let WM_SIZE: u32 = 0x0005;
 let WM_SETFOCUS: u32 = 0x0007;
 let WM_KILLFOCUS: u32 = 0x0008;
@@ -78,6 +79,7 @@ let WM_DROPFILES: u32 = 0x0233;
 let WM_DPICHANGED: u32 = 0x02E0;
 let WM_HOTKEY: u32 = 0x0312;
 let WM_TRAYICON: u32 = 0x8001; // WM_APP + 1
+let WM_WEBVIEW_EVENT: u32 = 0x8002; // WM_APP + 2
 
 // MessageBox flags (MB_*) and return IDs (ID*).
 let MB_OK: u32 = 0x00000000;

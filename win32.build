@@ -30,6 +30,7 @@ c_sources_windows = [
     "src/win32_audio.c",
     "src/win32_video.c",
     "src/win32_wic.c",
+    "src/win32_webview.c",
 ];
 c_include = ["include"];
 c_libs_windows = [

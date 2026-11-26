@@ -36,10 +36,11 @@ A [Goose](https://github.com/aardappel/goose) package providing Win32 API bindin
 - `game.goose` — XInput gamepad input & vibration + `winmm` high-resolution multimedia timers
 - `audio.goose` — WASAPI audio output & capture/loopback enumeration and shared-mode PCM render/capture streams + `winmm` `PlaySoundW`
 - `video.goose` — Media Foundation (`IMFSourceReader`) video decoding directly into RGB32 `u32[:]` frames
+- `webview.goose` — zero-dependency Microsoft Edge WebView2 host (`WebView`, runtime discovery, navigation, JS bridge, virtual hosts, settings, clipped bounds, and pull event queue)
 - `types.goose` — C-ABI-compatible flat structs (`Point`, `Size`, `Rect`, `Event`, `FileInfo`, `MonitorInfo`, `GamepadState`, `AudioFormat`, `VideoInfo`, `ProcessEntry`, `PowerStatus`, etc.) and handle wrappers
 - `constants.goose` — Win32 constants (`WS_*`, `WM_*`, `SW_*`, `VK_*`, `IDC_*`, `MB_*`, `MF_*`, `TPM_*`, `DT_*`, `CF_*`, `GENERIC_*`, `FILE_*`, `WAIT_*`, `MEM_*`, `PAGE_*`, `ES_*`, `XINPUT_*`, etc.)
 - `utf16.goose` — pure Goose UTF-8 ⇔ UTF-16LE conversion helpers
-- `include/win32_shim.h`, `src/win32_*.c` — thin Win32 C shim (`shim`, `dialogs`, `io`, `sync`, `wic`, `dib`, `d3d11`, `d2d`, `gl`, `system`, `net`, `display`, `desktop`, `controls`, `game`, `audio`, `video`)
+- `include/win32_shim.h`, `src/win32_*.c` — thin Win32 C shim (`shim`, `dialogs`, `io`, `sync`, `wic`, `dib`, `d3d11`, `d2d`, `gl`, `system`, `net`, `display`, `desktop`, `controls`, `game`, `audio`, `video`, `webview`)
 - `examples/hello_window.goose` — interactive GDI window demo
 - `examples/menu_and_dialogs.goose` — menu bar, context menu, common dialogs, clipboard, and file I/O demo
 - `examples/controls_and_desktop.goose` — native Win32 controls, DWM dark titlebar, display info, drag & drop, and system tray demo

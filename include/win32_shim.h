@@ -195,6 +195,15 @@ typedef struct {
     uint32_t battery_full_life_sec;
 } w32_power_status;
 
+typedef struct {
+    uint32_t webview_id;
+    uint32_t kind;
+    uint64_t req_id;
+    int32_t int_val;
+    uint8_t flag_a;
+    uint8_t flag_b;
+} w32_webview_event;
+
 #pragma pack(pop)
 
 /* DPI awareness (Per-Monitor V2 when available). */
@@ -655,6 +664,72 @@ uint64_t w32_named_pipe_open(w32_bytes name, uint32_t timeout_ms);
 /* Additional UI Controls: Tab Control, Status Bar (src/win32_controls.c). */
 int32_t w32_tab_add(uint64_t hwnd, int32_t index, w32_bytes text);
 uint8_t w32_statusbar_set_text(uint64_t hwnd, int32_t part, w32_bytes text);
+
+/* Window background erase suppression for custom-drawn hosts (src/win32_shim.c). */
+uint8_t w32_set_window_suppress_erase(uint64_t hwnd, uint8_t suppress);
+
+/* Microsoft Edge WebView2 (src/win32_webview.c). */
+uint8_t w32_webview_is_available(void);
+uint8_t w32_webview_runtime_version(gs_rref out);
+uint32_t w32_webview_create(
+    uint64_t parent_hwnd,
+    int32_t x,
+    int32_t y,
+    int32_t w,
+    int32_t h,
+    w32_bytes user_data_dir,
+    w32_bytes additional_args
+);
+void w32_webview_destroy(uint32_t wv_id);
+uint8_t w32_webview_is_ready(uint32_t wv_id);
+uint64_t w32_webview_host_hwnd(uint32_t wv_id);
+void w32_webview_set_bounds(uint32_t wv_id, int32_t x, int32_t y, int32_t w, int32_t h);
+void w32_webview_set_bounds_clipped(
+    uint32_t wv_id,
+    int32_t x,
+    int32_t y,
+    int32_t w,
+    int32_t h,
+    int32_t clip_x,
+    int32_t clip_y,
+    int32_t clip_w,
+    int32_t clip_h
+);
+void w32_webview_set_visible(uint32_t wv_id, uint8_t visible);
+void w32_webview_focus(uint32_t wv_id);
+void w32_webview_notify_parent_pos_changed(uint32_t wv_id);
+uint8_t w32_webview_navigate(uint32_t wv_id, w32_bytes url);
+uint8_t w32_webview_set_html(uint32_t wv_id, w32_bytes html);
+uint8_t w32_webview_reload(uint32_t wv_id);
+uint8_t w32_webview_stop(uint32_t wv_id);
+uint8_t w32_webview_go_back(uint32_t wv_id);
+uint8_t w32_webview_go_forward(uint32_t wv_id);
+uint8_t w32_webview_can_go_back(uint32_t wv_id);
+uint8_t w32_webview_can_go_forward(uint32_t wv_id);
+uint8_t w32_webview_get_url(uint32_t wv_id, gs_rref out);
+uint8_t w32_webview_get_title(uint32_t wv_id, gs_rref out);
+uint64_t w32_webview_eval_js(uint32_t wv_id, w32_bytes script);
+uint8_t w32_webview_add_init_script(uint32_t wv_id, w32_bytes script);
+uint8_t w32_webview_post_message_json(uint32_t wv_id, w32_bytes json);
+uint8_t w32_webview_post_message_string(uint32_t wv_id, w32_bytes text);
+uint8_t w32_webview_set_background_color(uint32_t wv_id, uint8_t r, uint8_t g, uint8_t b, uint8_t a);
+uint8_t w32_webview_set_color_scheme(uint32_t wv_id, int32_t scheme);
+uint8_t w32_webview_set_zoom(uint32_t wv_id, double factor);
+double w32_webview_get_zoom(uint32_t wv_id);
+uint8_t w32_webview_set_muted(uint32_t wv_id, uint8_t muted);
+uint8_t w32_webview_is_muted(uint32_t wv_id);
+uint8_t w32_webview_is_playing_audio(uint32_t wv_id);
+uint8_t w32_webview_set_devtools_enabled(uint32_t wv_id, uint8_t enabled);
+uint8_t w32_webview_open_devtools(uint32_t wv_id);
+uint8_t w32_webview_set_context_menu_enabled(uint32_t wv_id, uint8_t enabled);
+uint8_t w32_webview_set_status_bar_enabled(uint32_t wv_id, uint8_t enabled);
+uint8_t w32_webview_set_zoom_control_enabled(uint32_t wv_id, uint8_t enabled);
+uint8_t w32_webview_set_accelerator_keys_enabled(uint32_t wv_id, uint8_t enabled);
+uint8_t w32_webview_set_user_agent(uint32_t wv_id, w32_bytes ua);
+uint8_t w32_webview_set_new_window_policy(uint32_t wv_id, int32_t policy);
+uint8_t w32_webview_set_virtual_host_mapping(uint32_t wv_id, w32_bytes host_name, w32_bytes folder_path, int32_t access_kind);
+uint8_t w32_webview_clear_virtual_host_mapping(uint32_t wv_id, w32_bytes host_name);
+uint8_t w32_webview_poll_event(w32_webview_event *out_meta, gs_rref out_str1, gs_rref out_str2);
 
 #ifdef __cplusplus
 }

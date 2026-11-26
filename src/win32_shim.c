@@ -68,8 +68,8 @@ static int w32_queue_empty(void) {
 }
 
 static void w32_queue_push(const w32_event *ev) {
-    /* Coalesce consecutive WM_PAINT or WM_SIZE events for the same window. */
-    if ((ev->msg == WM_PAINT || ev->msg == WM_SIZE) && !w32_queue_empty()) {
+    /* Coalesce consecutive WM_PAINT, WM_SIZE, WM_MOVE, or W32_WM_WEBVIEW_EVENT events for the same window. */
+    if ((ev->msg == WM_PAINT || ev->msg == WM_SIZE || ev->msg == WM_MOVE || ev->msg == W32_WM_WEBVIEW_EVENT) && !w32_queue_empty()) {
         uint32_t idx = g_ev_head;
         while (idx != g_ev_tail) {
             if (g_events[idx].msg == ev->msg && g_events[idx].hwnd == ev->hwnd) {
@@ -78,6 +78,11 @@ static void w32_queue_push(const w32_event *ev) {
                     g_events[idx].lparam = ev->lparam;
                     g_events[idx].width = ev->width;
                     g_events[idx].height = ev->height;
+                } else if (ev->msg == WM_MOVE) {
+                    g_events[idx].wparam = ev->wparam;
+                    g_events[idx].lparam = ev->lparam;
+                    g_events[idx].x = ev->x;
+                    g_events[idx].y = ev->y;
                 }
                 return;
             }
@@ -112,6 +117,39 @@ typedef struct {
 } w32_min_size_entry;
 
 static w32_min_size_entry g_min_sizes[W32_MAX_MIN_SIZES];
+static HWND g_suppress_erase[W32_MAX_MIN_SIZES];
+
+static int w32_is_erase_suppressed(HWND hwnd) {
+    if (!hwnd) return 0;
+    for (int i = 0; i < W32_MAX_MIN_SIZES; i++) {
+        if (g_suppress_erase[i] == hwnd) return 1;
+    }
+    return 0;
+}
+
+uint8_t w32_set_window_suppress_erase(uint64_t hwnd_u64, uint8_t suppress) {
+    HWND hwnd = (HWND)(uintptr_t)hwnd_u64;
+    if (!hwnd) return 0;
+    int idx = -1;
+    int free_idx = -1;
+    for (int i = 0; i < W32_MAX_MIN_SIZES; i++) {
+        if (g_suppress_erase[i] == hwnd) {
+            idx = i;
+            break;
+        }
+        if (g_suppress_erase[i] == NULL && free_idx < 0) {
+            free_idx = i;
+        }
+    }
+    if (!suppress) {
+        if (idx >= 0) g_suppress_erase[idx] = NULL;
+        return 1;
+    }
+    if (idx >= 0) return 1;
+    if (free_idx < 0) return 0;
+    g_suppress_erase[free_idx] = hwnd;
+    return 1;
+}
 
 typedef LPVOID (WINAPI *pfn_w32_ConvertThreadToFiberEx)(LPVOID, DWORD);
 typedef LPVOID (WINAPI *pfn_w32_CreateFiberEx)(SIZE_T, SIZE_T, DWORD, LPFIBER_START_ROUTINE, LPVOID);
@@ -281,11 +319,17 @@ static LRESULT CALLBACK w32_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         case WM_ERASEBKGND:
             /* Preserve default background fill for parent windows hosting child controls;
-               suppress erase for custom-drawn / GPU windows to eliminate flicker. */
-            if (GetWindow(hwnd, GW_CHILD) != NULL) {
+               suppress erase for custom-drawn / GPU windows or WebView2 hosts to eliminate flicker. */
+            if (!w32_is_erase_suppressed(hwnd) && GetWindow(hwnd, GW_CHILD) != NULL) {
                 return DefWindowProcW(hwnd, msg, wp, lp);
             }
             return 1;
+
+        case WM_MOVE:
+            ev.x = w32_lo_i16(lp);
+            ev.y = w32_hi_i16(lp);
+            w32_queue_push(&ev);
+            return DefWindowProcW(hwnd, msg, wp, lp);
 
         case WM_ENTERSIZEMOVE:
             g_fiber.in_sizemove = 1;
@@ -360,6 +404,11 @@ static LRESULT CALLBACK w32_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case (WM_APP + 1): /* WM_TRAYICON */
             ev.command_id = (uint32_t)wp;
             ev.notify_code = (uint32_t)(lp & 0xFFFF);
+            w32_queue_push(&ev);
+            return 0;
+
+        case W32_WM_WEBVIEW_EVENT:
+            ev.command_id = (uint32_t)wp;
             w32_queue_push(&ev);
             return 0;
 
@@ -831,7 +880,11 @@ static void w32_cleanup_window_state(HWND hwnd) {
         if (g_min_sizes[i].active && g_min_sizes[i].hwnd == hwnd) {
             memset(&g_min_sizes[i], 0, sizeof(g_min_sizes[i]));
         }
+        if (g_suppress_erase[i] == hwnd) {
+            g_suppress_erase[i] = NULL;
+        }
     }
+    w32_webview_on_parent_destroy(hwnd);
 }
 
 uint8_t w32_set_borderless_fullscreen(uint64_t hwnd_u64, uint8_t enable) {

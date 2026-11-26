@@ -96,6 +96,7 @@ extern "user32" {
     fn ReleaseCapture() -> i32;
     fn GetForegroundWindow() -> u64;
     fn SetForegroundWindow(hwnd: u64) -> i32;
+    fn SetFocus(hwnd: u64) -> u64;
 }
 
 extern "gdi32" {

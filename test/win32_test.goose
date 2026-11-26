@@ -1440,6 +1440,140 @@ fn verify_dialog_linkage(run_ui: bool) {
     v.close();
 }
 
+fn pump_until_webview_events(win: win32::Hwnd, timeout_ms: u64, out_ev: win32::WebViewEvent&, out_s1: u8[>..]&, out_s2: u8[>..]&) -> bool {
+    let start = win32::tick_count_ms();
+    var ev = win32::Event {};
+    while win32::tick_count_ms() - start < timeout_ms {
+        while win32::poll_event(ev) {
+            let _ = ev.hwnd;
+        }
+        if win32::webview_poll_event(out_ev, out_s1, out_s2) {
+            return true;
+        }
+        win32::Sleep(10);
+    }
+    return false;
+}
+
+fn test_webview() {
+    let avail = win32::webview_is_available();
+    if !avail {
+        print("[SKIP] WebView2 Runtime not installed on this machine");
+        return;
+    }
+    let ver = win32::webview_runtime_version();
+    assert(ver.len > 0);
+
+    let win = win32::create_window("win32-goose webview test", 640, 420, win32::WS_OVERLAPPEDWINDOW);
+    assert(win.is_valid());
+    defer win.destroy();
+
+    let tmp_root = win32::temp_dir();
+    let pid = win32::GetCurrentProcessId();
+    var vhost_dir: u8[>..] = [];
+    format(vhost_dir, tmp_root, "w32_wv_vhost_", pid);
+    win32::create_directory(vhost_dir);
+    var vhost_file: u8[>..] = [];
+    format(vhost_file, vhost_dir, "\\index.html");
+    let vhtml = "<!doctype html><html><head><title>VHostTitle</title></head><body><div id='v'>ok</div></body></html>";
+    assert(win32::write_file_bytes(vhost_file, vhtml));
+    defer win32::remove_directory(vhost_dir);
+    defer win32::delete_file(vhost_file);
+
+    var udf_dir: u8[>..] = [];
+    format(udf_dir, tmp_root, "w32_wv_udf_", pid);
+
+    let wv = win32::webview_create(win, 0, 0, 640, 420, udf_dir);
+    assert(wv.is_valid());
+    defer wv.destroy();
+    assert(wv.host_hwnd().is_valid());
+
+    assert(wv.set_background_color(18, 20, 28, 255));
+    assert(wv.set_color_scheme(win32::WV_SCHEME_DARK));
+    assert(wv.set_zoom(1.25));
+    assert(wv.add_init_script("window.__gooseInit = 7;"));
+    assert(wv.set_virtual_host_mapping("goose-test.local", vhost_dir, win32::WV_HOST_ALLOW));
+
+    let html = "<!doctype html><html><head><title>TestTitle</title></head><body><script>window.chrome.webview.addEventListener('message', e => { window.__lastFromGoose = e.data; window.chrome.webview.postMessage('echo:' + e.data); }); window.chrome.webview.postMessage('hello-goose');</script></body></html>";
+    assert(wv.set_html(html));
+
+    var wve = win32::WebViewEvent {};
+    var s1: u8[>..] = [];
+    var s2: u8[>..] = [];
+    var got_ready = false;
+    var got_nav_done = false;
+    var got_title = false;
+    var got_hello = false;
+    var got_echo = false;
+    var got_eval = false;
+    var eval_req: u64 = 0;
+
+    let deadline = win32::tick_count_ms() + 12000;
+    while win32::tick_count_ms() < deadline && !(got_ready && got_nav_done && got_title && got_hello && got_echo && got_eval) {
+        if !pump_until_webview_events(win, 100, wve, s1, s2) {
+            continue;
+        }
+        if wve.webview_id != wv.id { continue; }
+        if wve.kind == win32::WV_EV_INIT_FAILED {
+            print("WebView2 init failed hr=", wve.int_val, " msg=", s1);
+            assert(false);
+        } else if wve.kind == win32::WV_EV_READY {
+            got_ready = true;
+            assert(wv.is_ready());
+        } else if wve.kind == win32::WV_EV_NAV_COMPLETED {
+            assert(wve.flag_a);
+            got_nav_done = true;
+            eval_req = wv.eval_js("21 * 2 + (window.__gooseInit || 0)");
+            assert(eval_req != 0);
+            assert(wv.post_message_string("ping-from-goose"));
+        } else if wve.kind == win32::WV_EV_TITLE_CHANGED {
+            if s1 == "TestTitle" { got_title = true; }
+        } else if wve.kind == win32::WV_EV_WEB_MESSAGE {
+            if s1 == "hello-goose" { got_hello = true; }
+            else if s1 == "echo:ping-from-goose" { got_echo = true; }
+        } else if wve.kind == win32::WV_EV_SCRIPT_RESULT {
+            if wve.req_id == eval_req {
+                assert(wve.flag_a);
+                assert(s1 == "49");
+                got_eval = true;
+            }
+        }
+    }
+
+    assert(got_ready && got_nav_done && got_title && got_hello && got_echo && got_eval);
+    assert(wv.title() == "TestTitle");
+    assert(wv.zoom() > 1.2 && wv.zoom() < 1.3);
+
+    // Virtual host navigation check.
+    var got_vhost_title = false;
+    assert(wv.navigate("https://goose-test.local/index.html"));
+    let v_deadline = win32::tick_count_ms() + 8000;
+    while win32::tick_count_ms() < v_deadline && !got_vhost_title {
+        if pump_until_webview_events(win, 100, wve, s1, s2) {
+            if wve.webview_id == wv.id && wve.kind == win32::WV_EV_TITLE_CHANGED && s1 == "VHostTitle" {
+                got_vhost_title = true;
+            }
+        }
+    }
+    assert(got_vhost_title);
+
+    // Clipping & visibility sync check.
+    wv.set_bounds_clipped(10, 10, 400, 300, 20, 20, 200, 150);
+    wv.set_visible(false);
+    wv.set_visible(true);
+    wv.notify_parent_pos_changed();
+
+    // Native mute & audio playing state (ICoreWebView2_8).
+    assert(!wv.is_muted());
+    assert(wv.set_muted(true));
+    assert(wv.is_muted());
+    assert(wv.set_muted(false));
+    assert(!wv.is_muted());
+    let _playing = wv.is_playing_audio();
+
+    print("[OK] WebView2 (runtime=", ver, ", eval=49, JS<->Goose bridge, vhost, clipped bounds, mute)");
+}
+
 fn main() {
     test_utf16_roundtrip();
     test_pure_externs();
@@ -1459,6 +1593,7 @@ fn main() {
     test_bugfix_regressions();
     test_gl2d_sdf_and_text_atlas();
     test_resize_viewport_and_min_size();
+    test_webview();
     verify_dialog_linkage(false);
     print("ALL WIN32 TESTS PASSED");
 }
