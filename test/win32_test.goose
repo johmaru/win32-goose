@@ -582,6 +582,16 @@ fn test_storage_extensions() {
     print("[OK] storage extensions (memory-mapped file, disk/volume ", fs, ", dir watch)");
 }
 
+fn test_bytes_contains(hay: const u8[:], needle: const u8[:]) -> bool {
+    if needle.len == 0 { return true; }
+    if needle.len > hay.len { return false; }
+    let limit = hay.len - needle.len;
+    for i in 0..(limit + 1) {
+        if hay[i..(i + needle.len)] == needle { return true; }
+    }
+    return false;
+}
+
 fn test_system_services() {
     var si = win32::SystemInfo {};
     win32::system_info(si);
@@ -623,6 +633,41 @@ fn test_system_services() {
     assert(proc.wait(5000) == win32::WAIT_OBJECT_0);
     var pcode: u32 = 0;
     assert(proc.exit_code(pcode) && pcode == 7);
+
+    // File-redirected spawn (stdout + stderr -> file, append mode) + UTF-8/BOM text decoding.
+    var cap_log: u8[>..] = [];
+    format(cap_log, win32::temp_dir(), "win32_goose_proc_cap_", win32::GetCurrentProcessId(), ".log");
+    defer win32::delete_file(cap_log);
+    assert(win32::write_file_bytes(cap_log, "HEADER\n"));
+    let cproc = win32::spawn_process_to_file(
+        "cmd.exe /c echo stdout-ok && echo stderr-ok 1>&2 && exit 3",
+        cap_log,
+        "",
+        true,
+        true
+    );
+    assert(cproc.is_valid());
+    defer cproc.close();
+    assert(cproc.pid() > 0);
+    assert(cproc.wait(5000) == win32::WAIT_OBJECT_0);
+    var ccode: u32 = 0;
+    assert(cproc.exit_code(ccode) && ccode == 3);
+    assert(!cproc.is_running());
+
+    var cap_raw: u8[>..] = [];
+    assert(win32::read_file_bytes(cap_log, cap_raw));
+    var cap_utf8: u8[>..] = [];
+    assert(win32::decode_text_to_utf8(cap_raw, cap_utf8));
+    assert(test_bytes_contains(cap_utf8, "HEADER"));
+    assert(test_bytes_contains(cap_utf8, "stdout-ok"));
+    assert(test_bytes_contains(cap_utf8, "stderr-ok"));
+
+    var bom_in: u8[>..] = [];
+    bom_in.push(0xEF); bom_in.push(0xBB); bom_in.push(0xBF);
+    bom_in.append("hello 日本語");
+    var bom_out: u8[>..] = [];
+    assert(win32::decode_text_to_utf8(bom_in, bom_out));
+    assert(bom_out == "hello 日本語");
 
     // Registry under HKCU\Software\Win32GooseTest_<pid> (cleaned up via defer).
     var subkey: u8[>..] = [];
@@ -1297,6 +1342,82 @@ fn test_gl2d_sdf_and_text_atlas() {
     print("[OK] OpenGL 3.3 Core 2D SDF + GPU VRAM text atlas (win32_gl2d)");
 }
 
+fn test_resize_viewport_and_min_size() {
+    // 1. Direct2D automatic client-rect sync & min client size via WM_GETMINMAXINFO
+    {
+        let win = win32::create_window("win32-goose d2d resize test", 200, 140, win32::WS_OVERLAPPEDWINDOW);
+        assert(win.is_valid());
+        defer win.destroy();
+
+        let d2d = win32::d2d_create(win, false);
+        assert(d2d.is_valid());
+        defer d2d.destroy();
+
+        let rc0 = win.client_rect();
+        let pw0, ph0 = d2d.pixel_size();
+        assert(pw0 == rc0.width() && ph0 == rc0.height());
+
+        let wrc = win.window_rect();
+        assert(win.move(wrc.left, wrc.top, wrc.width() + 140, wrc.height() + 90, false));
+        let rc1 = win.client_rect();
+        assert(rc1.width() >= rc0.width() + 100 && rc1.height() >= rc0.height() + 60);
+
+        // begin_draw must auto-sync D2D surface to new HWND client rect without explicit resize()
+        d2d.begin_draw();
+        d2d.clear(win32::colorf_rgb(16, 20, 30));
+        d2d.fill_rect(rc1.width() - 40.0, rc1.height() - 40.0, 32.0, 32.0, win32::colorf_rgb(76, 194, 255));
+        assert(d2d.end_draw());
+        let pw1, ph1 = d2d.pixel_size();
+        assert(pw1 == rc1.width() && ph1 == rc1.height());
+
+        // Explicit resize + pixel_size verification
+        assert(d2d.resize(180, 120));
+        let pw2, ph2 = d2d.pixel_size();
+        assert(pw2 == 180 && ph2 == 120);
+
+        // Min client size enforced on MoveWindow / WM_GETMINMAXINFO
+        assert(win.set_min_size(320, 240));
+        assert(win.move(wrc.left, wrc.top, 120, 100, false));
+        let rc_min = win.client_rect();
+        assert(rc_min.width() >= 320 && rc_min.height() >= 240);
+
+        assert(win.set_min_size(0, 0));
+        assert(win.move(wrc.left, wrc.top, 220, 160, false));
+        let rc_clr = win.client_rect();
+        assert(rc_clr.width() < 320 && rc_clr.height() < 240);
+    }
+
+    // 2. OpenGL GL2D expanded viewport rendering verification
+    {
+        let win = win32::create_window("win32-goose gl2d resize test", 160, 120, win32::WS_OVERLAPPEDWINDOW);
+        assert(win.is_valid());
+        defer win.destroy();
+
+        let g = win32::gl2d_create(win, false);
+        assert(g.is_valid());
+        defer g.destroy();
+
+        let wrc = win.window_rect();
+        assert(win.move(wrc.left, wrc.top, wrc.width() + 180, wrc.height() + 140, false));
+        let rc1 = win.client_rect();
+        assert(rc1.width() >= 300 && rc1.height() >= 220);
+
+        assert(g.resize(rc1.width(), rc1.height()));
+        g.begin_draw(win32::colorf_rgb(10, 12, 18, 1.0));
+        g.fill_rect(rc1.width() - 60.0, rc1.height() - 60.0, 50.0, 50.0, win32::colorf_rgb(34, 211, 238, 1.0));
+
+        var px: u32 = 0;
+        assert(g.readback_pixel(rc1.width() - 35, rc1.height() - 35, px));
+        let rch = px & 0xFF;
+        let gch = (px >> 8) & 0xFF;
+        let bch = (px >> 16) & 0xFF;
+        assert(rch <= 45 && gch >= 200 && bch >= 225);
+        assert(g.end_draw());
+    }
+
+    print("[OK] Direct2D/GL2D resize viewport sync & WM_GETMINMAXINFO min client size");
+}
+
 // Ensures every interactive/file-backed shim symbol resolves and links under both JIT and AOT.
 fn verify_dialog_linkage(run_ui: bool) {
     guard run_ui;
@@ -1337,6 +1458,7 @@ fn main() {
     test_cursor_fullscreen_raw_input();
     test_bugfix_regressions();
     test_gl2d_sdf_and_text_atlas();
+    test_resize_viewport_and_min_size();
     verify_dialog_linkage(false);
     print("ALL WIN32 TESTS PASSED");
 }

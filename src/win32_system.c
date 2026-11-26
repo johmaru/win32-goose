@@ -307,6 +307,133 @@ uint8_t w32_get_exit_code_process(uint64_t hproc, uint32_t *out_code) {
     return 1;
 }
 
+uint64_t w32_spawn_process_to_file(
+    w32_bytes cmdline,
+    w32_bytes working_dir,
+    w32_bytes log_path,
+    uint8_t append,
+    uint8_t hide_window
+) {
+    w32_wide_buf wcmd, wdir, wlog;
+    if (!w32_wide_init(&wcmd, cmdline) || wcmd.len == 0) {
+        w32_wide_free(&wcmd);
+        return 0;
+    }
+    if (!w32_wide_init(&wlog, log_path) || wlog.len == 0) {
+        w32_wide_free(&wlog);
+        w32_wide_free(&wcmd);
+        return 0;
+    }
+
+    wchar_t *mutable_cmd = (wchar_t *)malloc((size_t)(wcmd.len + 1) * sizeof(wchar_t));
+    if (!mutable_cmd) {
+        w32_wide_free(&wlog);
+        w32_wide_free(&wcmd);
+        return 0;
+    }
+    memcpy(mutable_cmd, wcmd.ptr, (size_t)(wcmd.len + 1) * sizeof(wchar_t));
+    w32_wide_free(&wcmd);
+
+    SECURITY_ATTRIBUTES sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+
+    DWORD access = append ? (FILE_APPEND_DATA | SYNCHRONIZE) : GENERIC_WRITE;
+    DWORD disp = append ? OPEN_ALWAYS : CREATE_ALWAYS;
+    HANDLE hlog = CreateFileW(
+        wlog.ptr,
+        access,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        &sa,
+        disp,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL
+    );
+    w32_wide_free(&wlog);
+    if (hlog == INVALID_HANDLE_VALUE) {
+        free(mutable_cmd);
+        return 0;
+    }
+
+    HANDLE hnul = CreateFileW(
+        L"NUL",
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        &sa,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL
+    );
+
+    if (!w32_wide_init(&wdir, working_dir)) {
+        wdir.len = 0;
+        wdir.ptr = wdir.stack;
+    }
+
+    STARTUPINFOW si;
+    memset(&si, 0, sizeof(si));
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdOutput = hlog;
+    si.hStdError = hlog;
+    si.hStdInput = (hnul != INVALID_HANDLE_VALUE) ? hnul : GetStdHandle(STD_INPUT_HANDLE);
+
+    PROCESS_INFORMATION pi;
+    memset(&pi, 0, sizeof(pi));
+
+    DWORD flags = hide_window ? CREATE_NO_WINDOW : 0;
+    BOOL ok = CreateProcessW(
+        NULL, mutable_cmd, NULL, NULL, TRUE, flags, NULL,
+        wdir.len > 0 ? wdir.ptr : NULL, &si, &pi
+    );
+
+    free(mutable_cmd);
+    w32_wide_free(&wdir);
+    CloseHandle(hlog);
+    if (hnul != INVALID_HANDLE_VALUE) CloseHandle(hnul);
+    if (!ok) return 0;
+
+    CloseHandle(pi.hThread);
+    return (uint64_t)(uintptr_t)pi.hProcess;
+}
+
+uint32_t w32_get_process_id(uint64_t hproc) {
+    if (!hproc) return 0;
+    return (uint32_t)GetProcessId((HANDLE)(uintptr_t)hproc);
+}
+
+uint8_t w32_decode_text_to_utf8(w32_bytes data, gs_rref out) {
+    if (!data.data || data.len <= 0) return 1;
+    const uint8_t *ptr = data.data;
+    int64_t len = data.len;
+    if (len >= 3 && ptr[0] == 0xEF && ptr[1] == 0xBB && ptr[2] == 0xBF) {
+        ptr += 3;
+        len -= 3;
+    }
+    if (len <= 0) return 1;
+    if (len > 0x7FFFFFFFLL) len = 0x7FFFFFFFLL;
+
+    int wn_utf8 = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, (const char *)ptr, (int)len, NULL, 0);
+    if (wn_utf8 > 0) {
+        gs_bld_append(out, ptr, len);
+        return 1;
+    }
+
+    int wn = MultiByteToWideChar(CP_ACP, 0, (const char *)ptr, (int)len, NULL, 0);
+    if (wn <= 0) {
+        gs_bld_append(out, ptr, len);
+        return 1;
+    }
+    wchar_t *wbuf = (wchar_t *)malloc((size_t)(wn + 1) * sizeof(wchar_t));
+    if (!wbuf) return 0;
+    MultiByteToWideChar(CP_ACP, 0, (const char *)ptr, (int)len, wbuf, wn);
+    wbuf[wn] = L'\0';
+    uint8_t ok = w32_append_wide_as_utf8(wbuf, wn, out);
+    free(wbuf);
+    return ok;
+}
+
 /* ---- Windows Registry (advapi32) ----------------------------------------- */
 
 uint64_t w32_reg_create_key(uint64_t root, w32_bytes subkey, uint32_t access) {

@@ -25,7 +25,16 @@ extern fn run_process_capture(
 ) -> bool = "w32_run_process_capture";
 
 extern fn shim_spawn_process(cmdline: const u8[:], working_dir: const u8[:], hide_window: bool) -> u64 = "w32_spawn_process";
+extern fn shim_spawn_process_to_file(
+    cmdline: const u8[:],
+    working_dir: const u8[:],
+    log_path: const u8[:],
+    append: bool,
+    hide_window: bool
+) -> u64 = "w32_spawn_process_to_file";
+extern fn shim_get_process_id(hproc: u64) -> u32 = "w32_get_process_id";
 extern fn shim_get_exit_code_process(hproc: u64, out_code: u32&) -> bool = "w32_get_exit_code_process";
+extern fn decode_text_to_utf8(data: const u8[:], out: u8[>..]&) -> bool = "w32_decode_text_to_utf8";
 
 extern fn shim_reg_create_key(root: u64, subkey: const u8[:], access: u32) -> u64 = "w32_reg_create_key";
 extern fn shim_reg_open_key(root: u64, subkey: const u8[:], access: u32) -> u64 = "w32_reg_open_key";
@@ -69,6 +78,24 @@ fn module_file_name() -> u8[>..] {
 
 fn spawn_process(cmdline: const u8[:], working_dir: const u8[:] = "", hide_window: bool = false) -> Hprocess {
     return Hprocess { raw: shim_spawn_process(cmdline, working_dir, hide_window) };
+}
+
+fn spawn_process_to_file(
+    cmdline: const u8[:],
+    log_path: const u8[:],
+    working_dir: const u8[:] = "",
+    append: bool = false,
+    hide_window: bool = false
+) -> Hprocess {
+    return Hprocess { raw: shim_spawn_process_to_file(cmdline, working_dir, log_path, append, hide_window) };
+}
+
+fn pid(p: Hprocess) -> u32 {
+    return if p.is_valid() { shim_get_process_id(p.raw) } else { 0 };
+}
+
+fn is_running(p: Hprocess) -> bool {
+    return p.is_valid() && WaitForSingleObject(p.raw, 0) == WAIT_TIMEOUT;
 }
 
 fn wait(p: Hprocess, timeout_ms: u32 = INFINITE) -> u32 {

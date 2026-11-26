@@ -68,11 +68,17 @@ static int w32_queue_empty(void) {
 }
 
 static void w32_queue_push(const w32_event *ev) {
-    /* Coalesce consecutive WM_PAINT events for the same window. */
-    if (ev->msg == WM_PAINT && !w32_queue_empty()) {
+    /* Coalesce consecutive WM_PAINT or WM_SIZE events for the same window. */
+    if ((ev->msg == WM_PAINT || ev->msg == WM_SIZE) && !w32_queue_empty()) {
         uint32_t idx = g_ev_head;
         while (idx != g_ev_tail) {
-            if (g_events[idx].msg == WM_PAINT && g_events[idx].hwnd == ev->hwnd) {
+            if (g_events[idx].msg == ev->msg && g_events[idx].hwnd == ev->hwnd) {
+                if (ev->msg == WM_SIZE) {
+                    g_events[idx].wparam = ev->wparam;
+                    g_events[idx].lparam = ev->lparam;
+                    g_events[idx].width = ev->width;
+                    g_events[idx].height = ev->height;
+                }
                 return;
             }
             idx = (idx + 1) % W32_EVENT_CAP;
@@ -90,6 +96,155 @@ static int w32_queue_pop(w32_event *out) {
     if (w32_queue_empty()) return 0;
     *out = g_events[g_ev_head];
     g_ev_head = (g_ev_head + 1) % W32_EVENT_CAP;
+    return 1;
+}
+
+/* ---- Minimum client size table & modal-sizemove fiber state -------------- */
+
+#define W32_MAX_MIN_SIZES 32
+#define W32_FIBER_FLAG_FLOAT_SWITCH 0x1
+
+typedef struct {
+    HWND hwnd;
+    int32_t min_w;
+    int32_t min_h;
+    int active;
+} w32_min_size_entry;
+
+static w32_min_size_entry g_min_sizes[W32_MAX_MIN_SIZES];
+
+typedef LPVOID (WINAPI *pfn_w32_ConvertThreadToFiberEx)(LPVOID, DWORD);
+typedef LPVOID (WINAPI *pfn_w32_CreateFiberEx)(SIZE_T, SIZE_T, DWORD, LPFIBER_START_ROUTINE, LPVOID);
+typedef void   (WINAPI *pfn_w32_SwitchToFiber)(LPVOID);
+
+static struct {
+    int init_state; /* 0 = uninitialized, 1 = ready, -1 = unavailable */
+    DWORD tid;
+    LPVOID main_fiber;
+    LPVOID dispatch_fiber;
+    MSG dispatch_msg;
+    int dispatch_pending;
+    int on_dispatch_fiber;
+    int in_sizemove;
+    int yielded_this_pump;
+    pfn_w32_ConvertThreadToFiberEx convert_thread_to_fiber_ex;
+    pfn_w32_CreateFiberEx create_fiber_ex;
+    pfn_w32_SwitchToFiber switch_to_fiber;
+} g_fiber;
+
+static VOID WINAPI w32_dispatch_fiber_proc(LPVOID param) {
+    (void)param;
+    for (;;) {
+        DispatchMessageW(&g_fiber.dispatch_msg);
+        g_fiber.dispatch_pending = 0;
+        g_fiber.in_sizemove = 0;
+        g_fiber.yielded_this_pump = 0;
+        g_fiber.on_dispatch_fiber = 0;
+        g_fiber.switch_to_fiber(g_fiber.main_fiber);
+    }
+}
+
+static int w32_ensure_fibers(void) {
+    if (g_fiber.init_state == 1) {
+        return GetCurrentThreadId() == g_fiber.tid ? 1 : 0;
+    }
+    if (g_fiber.init_state < 0) return 0;
+
+    HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
+    if (!k32) k32 = LoadLibraryW(L"kernel32.dll");
+    if (!k32) {
+        g_fiber.init_state = -1;
+        return 0;
+    }
+    g_fiber.convert_thread_to_fiber_ex =
+        (pfn_w32_ConvertThreadToFiberEx)(uintptr_t)GetProcAddress(k32, "ConvertThreadToFiberEx");
+    g_fiber.create_fiber_ex =
+        (pfn_w32_CreateFiberEx)(uintptr_t)GetProcAddress(k32, "CreateFiberEx");
+    g_fiber.switch_to_fiber =
+        (pfn_w32_SwitchToFiber)(uintptr_t)GetProcAddress(k32, "SwitchToFiber");
+
+    if (!g_fiber.convert_thread_to_fiber_ex || !g_fiber.create_fiber_ex || !g_fiber.switch_to_fiber) {
+        g_fiber.init_state = -1;
+        return 0;
+    }
+
+    LPVOID main_fib = g_fiber.convert_thread_to_fiber_ex(NULL, W32_FIBER_FLAG_FLOAT_SWITCH);
+    if (!main_fib) {
+        g_fiber.init_state = -1;
+        return 0;
+    }
+
+    LPVOID disp_fib = g_fiber.create_fiber_ex(
+        65536, 1048576, W32_FIBER_FLAG_FLOAT_SWITCH, w32_dispatch_fiber_proc, NULL
+    );
+    if (!disp_fib) {
+        g_fiber.init_state = -1;
+        return 0;
+    }
+
+    g_fiber.tid = GetCurrentThreadId();
+    g_fiber.main_fiber = main_fib;
+    g_fiber.dispatch_fiber = disp_fib;
+    g_fiber.init_state = 1;
+    return 1;
+}
+
+static void w32_maybe_yield_sizemove(void) {
+    if (g_fiber.init_state == 1 &&
+        g_fiber.on_dispatch_fiber &&
+        g_fiber.in_sizemove > 0 &&
+        g_fiber.main_fiber &&
+        GetCurrentThreadId() == g_fiber.tid) {
+        g_fiber.yielded_this_pump = 1;
+        g_fiber.on_dispatch_fiber = 0;
+        g_fiber.switch_to_fiber(g_fiber.main_fiber);
+    }
+}
+
+static void w32_dispatch_os_msg(const MSG *msg) {
+    UINT m = msg->message;
+    /* Route messages that enter DefWindowProc's modal move/resize loop on a
+       worker fiber so WM_SIZE / WM_PAINT / WM_TIMER can yield live frames. */
+    int may_enter_modal = (m == WM_NCLBUTTONDOWN || m == WM_SYSCOMMAND || m == 0x0242 /* WM_NCPOINTERDOWN */);
+    if (may_enter_modal && !g_fiber.dispatch_pending && w32_ensure_fibers()) {
+        g_fiber.dispatch_msg = *msg;
+        g_fiber.dispatch_pending = 1;
+        g_fiber.yielded_this_pump = 0;
+        g_fiber.on_dispatch_fiber = 1;
+        g_fiber.switch_to_fiber(g_fiber.dispatch_fiber);
+        g_fiber.on_dispatch_fiber = 0;
+        return;
+    }
+    DispatchMessageW(msg);
+}
+
+uint8_t w32_set_window_min_size(uint64_t hwnd_u64, int32_t min_client_w, int32_t min_client_h) {
+    HWND hwnd = (HWND)(uintptr_t)hwnd_u64;
+    if (!hwnd) return 0;
+
+    int idx = -1;
+    int free_idx = -1;
+    for (int i = 0; i < W32_MAX_MIN_SIZES; i++) {
+        if (g_min_sizes[i].active && g_min_sizes[i].hwnd == hwnd) {
+            idx = i;
+            break;
+        }
+        if (!g_min_sizes[i].active && free_idx < 0) {
+            free_idx = i;
+        }
+    }
+
+    if (min_client_w <= 0 && min_client_h <= 0) {
+        if (idx >= 0) memset(&g_min_sizes[idx], 0, sizeof(g_min_sizes[idx]));
+        return 1;
+    }
+
+    int slot = (idx >= 0) ? idx : free_idx;
+    if (slot < 0) return 0;
+    g_min_sizes[slot].hwnd = hwnd;
+    g_min_sizes[slot].min_w = min_client_w;
+    g_min_sizes[slot].min_h = min_client_h;
+    g_min_sizes[slot].active = 1;
     return 1;
 }
 
@@ -119,6 +274,7 @@ static LRESULT CALLBACK w32_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
 
         case WM_DESTROY:
+            g_fiber.in_sizemove = 0;
             w32_cleanup_window_state(hwnd);
             w32_queue_push(&ev);
             return 0;
@@ -131,15 +287,57 @@ static LRESULT CALLBACK w32_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 1;
 
+        case WM_ENTERSIZEMOVE:
+            g_fiber.in_sizemove = 1;
+            return 0;
+
+        case WM_EXITSIZEMOVE:
+            g_fiber.in_sizemove = 0;
+            return 0;
+
+        case WM_GETMINMAXINFO: {
+            LRESULT res = DefWindowProcW(hwnd, msg, wp, lp);
+            for (int i = 0; i < W32_MAX_MIN_SIZES; i++) {
+                if (g_min_sizes[i].active && g_min_sizes[i].hwnd == hwnd) {
+                    MINMAXINFO *mmi = (MINMAXINFO *)(uintptr_t)lp;
+                    if (mmi) {
+                        RECT rc = {
+                            0,
+                            0,
+                            g_min_sizes[i].min_w > 0 ? g_min_sizes[i].min_w : 0,
+                            g_min_sizes[i].min_h > 0 ? g_min_sizes[i].min_h : 0
+                        };
+                        DWORD style = (DWORD)GetWindowLongPtrW(hwnd, GWL_STYLE);
+                        DWORD ex_style = (DWORD)GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+                        BOOL has_menu = (GetMenu(hwnd) != NULL) ? TRUE : FALSE;
+                        AdjustWindowRectEx(&rc, style, has_menu, ex_style);
+                        if (g_min_sizes[i].min_w > 0) {
+                            LONG mw = rc.right - rc.left;
+                            if (mw > mmi->ptMinTrackSize.x) mmi->ptMinTrackSize.x = mw;
+                        }
+                        if (g_min_sizes[i].min_h > 0) {
+                            LONG mh = rc.bottom - rc.top;
+                            if (mh > mmi->ptMinTrackSize.y) mmi->ptMinTrackSize.y = mh;
+                        }
+                    }
+                    return 0;
+                }
+            }
+            return res;
+        }
+
         case WM_PAINT:
             ValidateRect(hwnd, NULL);
             w32_queue_push(&ev);
+            w32_maybe_yield_sizemove();
             return 0;
 
         case WM_SIZE:
             ev.width = (int32_t)(uint16_t)(lp & 0xFFFF);
             ev.height = (int32_t)(uint16_t)((lp >> 16) & 0xFFFF);
             w32_queue_push(&ev);
+            w32_maybe_yield_sizemove();
+            ValidateRect(hwnd, NULL);
             return 0;
 
         case WM_COMMAND:
@@ -225,9 +423,15 @@ static LRESULT CALLBACK w32_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         case WM_SETFOCUS:
         case WM_KILLFOCUS:
-        case WM_TIMER:
             w32_queue_push(&ev);
             return DefWindowProcW(hwnd, msg, wp, lp);
+
+        case WM_TIMER: {
+            w32_queue_push(&ev);
+            LRESULT res = DefWindowProcW(hwnd, msg, wp, lp);
+            w32_maybe_yield_sizemove();
+            return res;
+        }
 
         case WM_DPICHANGED: {
             /* Copy DPI and suggested rect dimensions; do not queue dangling lParam RECT*. */
@@ -329,6 +533,20 @@ uint64_t w32_create_window(
 
 uint8_t w32_poll_event(w32_event *out) {
     if (w32_queue_pop(out)) return 1;
+    if (g_fiber.dispatch_pending) {
+        if (g_fiber.yielded_this_pump) {
+            g_fiber.yielded_this_pump = 0;
+            return 0;
+        }
+        g_fiber.on_dispatch_fiber = 1;
+        g_fiber.switch_to_fiber(g_fiber.dispatch_fiber);
+        g_fiber.on_dispatch_fiber = 0;
+        if (w32_queue_pop(out)) return 1;
+        if (g_fiber.dispatch_pending) {
+            g_fiber.yielded_this_pump = 0;
+            return 0;
+        }
+    }
 
     MSG msg;
     while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
@@ -340,8 +558,12 @@ uint8_t w32_poll_event(w32_event *out) {
             return 1;
         }
         TranslateMessage(&msg);
-        DispatchMessageW(&msg);
+        w32_dispatch_os_msg(&msg);
         if (w32_queue_pop(out)) return 1;
+        if (g_fiber.dispatch_pending) {
+            g_fiber.yielded_this_pump = 0;
+            return 0;
+        }
     }
     return 0;
 }
@@ -353,6 +575,17 @@ uint8_t w32_wait_event(w32_event *out) {
 
     MSG msg;
     for (;;) {
+        if (g_fiber.dispatch_pending) {
+            g_fiber.yielded_this_pump = 0;
+            g_fiber.on_dispatch_fiber = 1;
+            g_fiber.switch_to_fiber(g_fiber.dispatch_fiber);
+            g_fiber.on_dispatch_fiber = 0;
+            if (w32_queue_pop(out)) {
+                return out->msg == WM_QUIT ? 0 : 1;
+            }
+            continue;
+        }
+
         BOOL ret = GetMessageW(&msg, NULL, 0, 0);
         if (ret <= 0) {
             memset(out, 0, sizeof(*out));
@@ -362,7 +595,7 @@ uint8_t w32_wait_event(w32_event *out) {
             return 0;
         }
         TranslateMessage(&msg);
-        DispatchMessageW(&msg);
+        w32_dispatch_os_msg(&msg);
         if (w32_queue_pop(out)) {
             return out->msg == WM_QUIT ? 0 : 1;
         }
@@ -592,6 +825,11 @@ static void w32_cleanup_window_state(HWND hwnd) {
     for (int i = 0; i < W32_MAX_FULLSCREEN; i++) {
         if (g_fs[i].active && g_fs[i].hwnd == hwnd) {
             memset(&g_fs[i], 0, sizeof(g_fs[i]));
+        }
+    }
+    for (int i = 0; i < W32_MAX_MIN_SIZES; i++) {
+        if (g_min_sizes[i].active && g_min_sizes[i].hwnd == hwnd) {
+            memset(&g_min_sizes[i], 0, sizeof(g_min_sizes[i]));
         }
     }
 }

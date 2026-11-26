@@ -51,6 +51,7 @@ extern fn shim_create_window(
 
 extern fn poll_event(out: Event&) -> bool = "w32_poll_event";
 extern fn wait_event(out: Event&) -> bool = "w32_wait_event";
+extern fn shim_set_window_min_size(hwnd: u64, min_w: i32, min_h: i32) -> bool = "w32_set_window_min_size";
 
 extern fn shim_begin_paint(hwnd: u64, rect: Rect&) -> u64 = "w32_begin_paint";
 extern fn shim_end_paint(hwnd: u64) = "w32_end_paint";
@@ -208,6 +209,10 @@ fn window_rect(w: Hwnd) -> Rect {
 
 fn move(w: Hwnd, x: i32, y: i32, width: i32, height: i32, repaint: bool = true) -> bool {
     return MoveWindow(w.raw, x, y, width, height, if repaint { 1 } else { 0 }) != 0;
+}
+
+fn set_min_size(w: Hwnd, min_client_w: i32, min_client_h: i32) -> bool {
+    return shim_set_window_min_size(w.raw, min_client_w, min_client_h);
 }
 
 fn dpi(w: Hwnd) -> u32 {

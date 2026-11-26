@@ -239,6 +239,8 @@ typedef struct {
     HWND hwnd;
     uint8_t vsync;
     int clip_depth;
+    UINT32 pixel_w;
+    UINT32 pixel_h;
     void *factory;
     void *dw_factory;
     void *rt;
@@ -295,7 +297,47 @@ static int create_hwnd_target(w32_d2d_target *t) {
         return 0;
     }
     t->clip_depth = 0;
+    t->pixel_w = w;
+    t->pixel_h = h;
     return 1;
+}
+
+static void d2d_release_target_resources(w32_d2d_target *t) {
+    if (!t) return;
+    com_release(t->brush);
+    com_release(t->rt);
+    t->brush = NULL;
+    t->rt = NULL;
+    t->clip_depth = 0;
+    t->pixel_w = 0;
+    t->pixel_h = 0;
+}
+
+static int d2d_recreate_hwnd_target(w32_d2d_target *t) {
+    d2d_release_target_resources(t);
+    return create_hwnd_target(t);
+}
+
+static uint8_t d2d_ensure_size(w32_d2d_target *t, UINT32 uw, UINT32 uh) {
+    if (!t || uw == 0 || uh == 0) return 0;
+    if (!t->rt && !create_hwnd_target(t)) return 0;
+    if (t->pixel_w == uw && t->pixel_h == uh) return 1;
+
+    D2D1_SIZE_U sz = { uw, uh };
+    if (SUCCEEDED(d2d_hwnd_rt_resize(t->rt, &sz))) {
+        t->pixel_w = uw;
+        t->pixel_h = uh;
+        return 1;
+    }
+
+    if (!d2d_recreate_hwnd_target(t)) return 0;
+    if (t->pixel_w == uw && t->pixel_h == uh) return 1;
+    if (SUCCEEDED(d2d_hwnd_rt_resize(t->rt, &sz))) {
+        t->pixel_w = uw;
+        t->pixel_h = uh;
+        return 1;
+    }
+    return 0;
 }
 
 static void *use_brush(w32_d2d_target *t, w32_colorf c) {
@@ -351,8 +393,7 @@ uint32_t w32_d2d_create(uint64_t hwnd_u64, uint8_t vsync) {
 void w32_d2d_destroy(uint32_t target_id) {
     w32_d2d_target *t = get_target(target_id);
     if (!t) return;
-    com_release(t->brush);
-    com_release(t->rt);
+    d2d_release_target_resources(t);
     com_release(t->dw_factory);
     com_release(t->factory);
     memset(t, 0, sizeof(*t));
@@ -360,15 +401,35 @@ void w32_d2d_destroy(uint32_t target_id) {
 
 uint8_t w32_d2d_resize(uint32_t target_id, int32_t width, int32_t height) {
     w32_d2d_target *t = get_target(target_id);
-    if (!t || !t->rt || width <= 0 || height <= 0) return 0;
-    D2D1_SIZE_U sz = { (UINT32)width, (UINT32)height };
-    return SUCCEEDED(d2d_hwnd_rt_resize(t->rt, &sz)) ? 1 : 0;
+    if (!t || width <= 0 || height <= 0) return 0;
+    return d2d_ensure_size(t, (UINT32)width, (UINT32)height);
+}
+
+uint8_t w32_d2d_get_pixel_size(uint32_t target_id, int32_t *out_w, int32_t *out_h) {
+    if (out_w) *out_w = 0;
+    if (out_h) *out_h = 0;
+    w32_d2d_target *t = get_target(target_id);
+    if (!t) return 0;
+    if (out_w) *out_w = (int32_t)t->pixel_w;
+    if (out_h) *out_h = (int32_t)t->pixel_h;
+    return 1;
 }
 
 void w32_d2d_begin_draw(uint32_t target_id) {
     w32_d2d_target *t = get_target(target_id);
     if (!t) return;
     if (!t->rt && !create_hwnd_target(t)) return;
+
+    RECT rc;
+    if (GetClientRect(t->hwnd, &rc)) {
+        UINT32 cw = (UINT32)(rc.right > rc.left ? rc.right - rc.left : 1);
+        UINT32 ch = (UINT32)(rc.bottom > rc.top ? rc.bottom - rc.top : 1);
+        if (cw != t->pixel_w || ch != t->pixel_h) {
+            d2d_ensure_size(t, cw, ch);
+        }
+    }
+    if (!t->rt) return;
+
     t->clip_depth = 0;
     d2d_rt_begin_draw(t->rt);
 }
@@ -382,12 +443,7 @@ uint8_t w32_d2d_end_draw(uint32_t target_id) {
     }
     HRESULT hr = d2d_rt_end_draw(t->rt);
     if (hr == (HRESULT)0x8899000C /* D2DERR_RECREATE_TARGET */) {
-        com_release(t->brush);
-        com_release(t->rt);
-        t->brush = NULL;
-        t->rt = NULL;
-        t->clip_depth = 0;
-        create_hwnd_target(t);
+        d2d_recreate_hwnd_target(t);
         return 1;
     }
     return SUCCEEDED(hr) ? 1 : 0;

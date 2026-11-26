@@ -42,6 +42,7 @@ fn is_valid(f: D2dFont) -> bool { f.id != 0 }
 extern fn shim_d2d_create(hwnd: u64, vsync: bool) -> u32 = "w32_d2d_create";
 extern fn shim_d2d_destroy(target_id: u32) = "w32_d2d_destroy";
 extern fn shim_d2d_resize(target_id: u32, width: i32, height: i32) -> bool = "w32_d2d_resize";
+extern fn shim_d2d_get_pixel_size(target_id: u32, out_w: i32&, out_h: i32&) -> bool = "w32_d2d_get_pixel_size";
 extern fn shim_d2d_begin_draw(target_id: u32) = "w32_d2d_begin_draw";
 extern fn shim_d2d_end_draw(target_id: u32) -> bool = "w32_d2d_end_draw";
 extern fn shim_d2d_clear(target_id: u32, color: ColorF) = "w32_d2d_clear";
@@ -72,6 +73,15 @@ fn destroy(t: D2dTarget) {
 
 fn resize(t: D2dTarget, width: i32, height: i32) -> bool {
     return shim_d2d_resize(t.id, width, height);
+}
+
+fn pixel_size(t: D2dTarget) -> i32, i32 {
+    var w: i32 = 0;
+    var h: i32 = 0;
+    if !shim_d2d_get_pixel_size(t.id, w, h) {
+        return 0, 0;
+    }
+    return w, h;
 }
 
 fn begin_draw(t: D2dTarget) {

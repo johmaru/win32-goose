@@ -840,6 +840,9 @@ uint8_t w32_gl2d_resize(uint32_t target_id, int32_t width, int32_t height) {
     gl2d_make_current(t);
     t->fb_w = width;
     t->fb_h = height;
+    if (g_gl2d.loaded_ogl && g_gl2d.glViewport) {
+        g_gl2d.glViewport(0, 0, (GLsizei)width, (GLsizei)height);
+    }
     return 1;
 }
 

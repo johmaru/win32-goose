@@ -222,6 +222,9 @@ uint8_t w32_poll_event(w32_event *out);
 /* Blocking event pump: returns 1 for a normal event, 0 on WM_QUIT (out still carries WM_QUIT). */
 uint8_t w32_wait_event(w32_event *out);
 
+/* Configure minimum client-area size enforced via WM_GETMINMAXINFO (0 disables axis). */
+uint8_t w32_set_window_min_size(uint64_t hwnd, int32_t min_client_w, int32_t min_client_h);
+
 /* Flicker-free double-buffered paint session outside WndProc.
    w32_begin_paint returns a memory HDC (0 on failure) and writes client rect to out_rect. */
 uint64_t w32_begin_paint(uint64_t hwnd, w32_rect *out_rect);
@@ -355,6 +358,7 @@ uint8_t w32_d3d11_readback_pixel(uint32_t dev_id, int32_t x, int32_t y, uint32_t
 uint32_t w32_d2d_create(uint64_t hwnd, uint8_t vsync);
 void w32_d2d_destroy(uint32_t target_id);
 uint8_t w32_d2d_resize(uint32_t target_id, int32_t width, int32_t height);
+uint8_t w32_d2d_get_pixel_size(uint32_t target_id, int32_t *out_w, int32_t *out_h);
 void w32_d2d_begin_draw(uint32_t target_id);
 uint8_t w32_d2d_end_draw(uint32_t target_id);
 void w32_d2d_clear(uint32_t target_id, w32_colorf color);
@@ -450,7 +454,16 @@ uint8_t w32_env_set(w32_bytes name, w32_bytes value);
 uint8_t w32_env_delete(w32_bytes name);
 uint8_t w32_run_process_capture(w32_bytes cmdline, gs_rref out_stdout, uint32_t *out_exit_code, uint32_t timeout_ms);
 uint64_t w32_spawn_process(w32_bytes cmdline, w32_bytes working_dir, uint8_t hide_window);
+uint64_t w32_spawn_process_to_file(
+    w32_bytes cmdline,
+    w32_bytes working_dir,
+    w32_bytes log_path,
+    uint8_t append,
+    uint8_t hide_window
+);
+uint32_t w32_get_process_id(uint64_t hproc);
 uint8_t w32_get_exit_code_process(uint64_t hproc, uint32_t *out_code);
+uint8_t w32_decode_text_to_utf8(w32_bytes data, gs_rref out);
 uint64_t w32_reg_create_key(uint64_t root, w32_bytes subkey, uint32_t access);
 uint64_t w32_reg_open_key(uint64_t root, w32_bytes subkey, uint32_t access);
 uint8_t w32_reg_delete_key(uint64_t root, w32_bytes subkey);
