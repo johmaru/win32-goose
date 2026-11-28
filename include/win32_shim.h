@@ -204,6 +204,13 @@ typedef struct {
     uint8_t flag_b;
 } w32_webview_event;
 
+typedef struct {
+    uint64_t req_id;
+    uint32_t status;
+    uint8_t ok;
+    uint8_t truncated;
+} w32_http_async_meta;
+
 #pragma pack(pop)
 
 /* DPI awareness (Per-Monitor V2 when available). */
@@ -730,6 +737,62 @@ uint8_t w32_webview_set_new_window_policy(uint32_t wv_id, int32_t policy);
 uint8_t w32_webview_set_virtual_host_mapping(uint32_t wv_id, w32_bytes host_name, w32_bytes folder_path, int32_t access_kind);
 uint8_t w32_webview_clear_virtual_host_mapping(uint32_t wv_id, w32_bytes host_name);
 uint8_t w32_webview_poll_event(w32_webview_event *out_meta, gs_rref out_str1, gs_rref out_str2);
+
+/* Alpha-blended 2D bitmap/image drawing across Software GDI, Direct2D, and OpenGL 3.3. */
+uint32_t w32_gdi_create_image(int32_t w, int32_t h, w32_u32_slice pixels_bgra);
+void w32_gdi_destroy_image(uint32_t img_id);
+uint8_t w32_gdi_draw_image(
+    uint64_t hdc,
+    uint32_t img_id,
+    int32_t dst_x,
+    int32_t dst_y,
+    int32_t dst_w,
+    int32_t dst_h,
+    float opacity
+);
+
+uint32_t w32_d2d_create_bitmap(uint32_t target_id, int32_t w, int32_t h, w32_u32_slice pixels_bgra);
+void w32_d2d_destroy_bitmap(uint32_t bmp_id);
+void w32_d2d_draw_bitmap(uint32_t target_id, uint32_t bmp_id, float x, float y, float w, float h, float opacity);
+
+uint32_t w32_gl2d_create_image(uint32_t target_id, int32_t w, int32_t h, w32_u32_slice pixels_bgra);
+void w32_gl2d_destroy_image(uint32_t img_id);
+void w32_gl2d_draw_image(uint32_t target_id, uint32_t img_id, float x, float y, float w, float h, float opacity);
+
+/* WIC in-memory decode, scaling, and Windows Shell/EXE icon extraction (src/win32_wic.c). */
+uint8_t w32_image_load_bgra_mem(w32_bytes data, gs_rref out_pixels_u32, int32_t *out_w, int32_t *out_h);
+uint8_t w32_image_load_rgba_mem(w32_bytes data, gs_rref out_pixels_u32, int32_t *out_w, int32_t *out_h);
+uint8_t w32_image_resize_bgra(
+    w32_u32_slice src_pixels,
+    int32_t src_w,
+    int32_t src_h,
+    int32_t dst_w,
+    int32_t dst_h,
+    gs_rref out_pixels_u32
+);
+uint8_t w32_extract_file_icon_bgra(
+    w32_bytes path,
+    int32_t desired_size,
+    gs_rref out_pixels_u32,
+    int32_t *out_w,
+    int32_t *out_h
+);
+
+/* Background non-blocking WinHTTP GET queue (src/win32_net.c). */
+uint64_t w32_http_get_async(
+    w32_bytes url,
+    w32_bytes headers_crlf,
+    uint32_t max_bytes,
+    uint32_t timeout_ms,
+    uint64_t notify_hwnd
+);
+uint8_t w32_http_poll_async(
+    w32_http_async_meta *out_meta,
+    gs_rref out_body,
+    gs_rref out_content_type,
+    gs_rref out_final_url
+);
+void w32_http_cancel_all_async(void);
 
 #ifdef __cplusplus
 }

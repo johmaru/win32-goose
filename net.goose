@@ -45,6 +45,41 @@ extern fn http_request_ex(
     timeout_ms: u32 = 10000
 ) -> bool = "w32_http_request_ex";
 
+// Must match w32_http_async_meta in include/win32_shim.h (packed).
+struct HttpAsyncMeta {
+    req_id: u64 = 0,
+    status: u32 = 0,
+    ok: bool = false,
+    truncated: bool = false,
+}
+
+extern fn shim_http_get_async(
+    url: const u8[:],
+    headers_crlf: const u8[:],
+    max_bytes: u32,
+    timeout_ms: u32,
+    notify_hwnd: u64
+) -> u64 = "w32_http_get_async";
+
+extern fn http_poll_async(
+    out_meta: HttpAsyncMeta&,
+    out_body: u8[>..]&,
+    out_content_type: u8[>..]&,
+    out_final_url: u8[>..]&
+) -> bool = "w32_http_poll_async";
+
+extern fn http_cancel_all_async() = "w32_http_cancel_all_async";
+
+fn http_get_async(
+    url: const u8[:],
+    headers_crlf: const u8[:] = "",
+    max_bytes: u32 = 2097152,
+    timeout_ms: u32 = 6000,
+    notify_win: Hwnd = Hwnd {}
+) -> u64 {
+    return shim_http_get_async(url, headers_crlf, max_bytes, timeout_ms, notify_win.raw);
+}
+
 // --- Winsock2 wrappers (Hsocket) --------------------------------------------
 
 fn tcp_listen(host: const u8[:], port: u16, backlog: i32 = 16) -> Hsocket {

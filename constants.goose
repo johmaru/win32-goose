@@ -80,6 +80,7 @@ let WM_DPICHANGED: u32 = 0x02E0;
 let WM_HOTKEY: u32 = 0x0312;
 let WM_TRAYICON: u32 = 0x8001; // WM_APP + 1
 let WM_WEBVIEW_EVENT: u32 = 0x8002; // WM_APP + 2
+let WM_HTTP_ASYNC: u32 = 0x8003; // WM_APP + 3
 
 // MessageBox flags (MB_*) and return IDs (ID*).
 let MB_OK: u32 = 0x00000000;

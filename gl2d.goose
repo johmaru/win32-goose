@@ -6,9 +6,11 @@ import d2d;
 
 struct Gl2dTarget { id: u32 = 0 }
 struct Gl2dFont { id: u32 = 0 }
+struct Gl2dImage { id: u32 = 0 }
 
 fn is_valid(t: Gl2dTarget) -> bool { t.id != 0 }
 fn is_valid(f: Gl2dFont) -> bool { f.id != 0 }
+fn is_valid(img: Gl2dImage) -> bool { img.id != 0 }
 
 let GL2D_ALIGN_START: i32 = 0;
 let GL2D_ALIGN_CENTER: i32 = 1;
@@ -41,6 +43,9 @@ extern fn shim_gl2d_draw_text(
     color: ColorF
 ) = "w32_gl2d_draw_text";
 extern fn shim_gl2d_readback_pixel(target_id: u32, x: i32, y: i32, out_rgba: u32&) -> bool = "w32_gl2d_readback_pixel";
+extern fn shim_gl2d_create_image(target_id: u32, w: i32, h: i32, pixels_bgra: const u32[:]) -> u32 = "w32_gl2d_create_image";
+extern fn shim_gl2d_destroy_image(img_id: u32) = "w32_gl2d_destroy_image";
+extern fn shim_gl2d_draw_image(target_id: u32, img_id: u32, x: f32, y: f32, w: f32, h: f32, opacity: f32) = "w32_gl2d_draw_image";
 
 fn gl2d_create(win: Hwnd, vsync: bool = true) -> Gl2dTarget {
     return Gl2dTarget { id: shim_gl2d_create(win.raw, vsync) };
@@ -124,4 +129,16 @@ fn draw_text(
 
 fn readback_pixel(t: Gl2dTarget, x: i32, y: i32, out_rgba: u32&) -> bool {
     return shim_gl2d_readback_pixel(t.id, x, y, out_rgba);
+}
+
+fn create_image(t: Gl2dTarget, w: i32, h: i32, pixels_bgra: const u32[:]) -> Gl2dImage {
+    return Gl2dImage { id: shim_gl2d_create_image(t.id, w, h, pixels_bgra) };
+}
+
+fn destroy(img: Gl2dImage) {
+    shim_gl2d_destroy_image(img.id);
+}
+
+fn draw_image(t: Gl2dTarget, img: Gl2dImage, x: f32, y: f32, w: f32, h: f32, opacity: f32 = 1.0) {
+    shim_gl2d_draw_image(t.id, img.id, x, y, w, h, opacity);
 }

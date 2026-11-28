@@ -35,9 +35,11 @@ let D2D_VALIGN_CENTER: i32 = 2;
 
 struct D2dTarget { id: u32 = 0 }
 struct D2dFont { id: u32 = 0 }
+struct D2dBitmap { id: u32 = 0 }
 
 fn is_valid(t: D2dTarget) -> bool { t.id != 0 }
 fn is_valid(f: D2dFont) -> bool { f.id != 0 }
+fn is_valid(b: D2dBitmap) -> bool { b.id != 0 }
 
 extern fn shim_d2d_create(hwnd: u64, vsync: bool) -> u32 = "w32_d2d_create";
 extern fn shim_d2d_destroy(target_id: u32) = "w32_d2d_destroy";
@@ -62,6 +64,9 @@ extern fn shim_d2d_set_font_word_wrap(font_id: u32, wrap: bool) = "w32_d2d_set_f
 extern fn shim_d2d_destroy_font(font_id: u32) = "w32_d2d_destroy_font";
 extern fn shim_d2d_draw_text(target_id: u32, text: const u8[:], font_id: u32, x: f32, y: f32, w: f32, h: f32, color: ColorF) = "w32_d2d_draw_text";
 extern fn shim_d2d_measure_text(target_id: u32, text: const u8[:], font_id: u32, out_w: f32&, out_h: f32&) -> bool = "w32_d2d_measure_text";
+extern fn shim_d2d_create_bitmap(target_id: u32, w: i32, h: i32, pixels_bgra: const u32[:]) -> u32 = "w32_d2d_create_bitmap";
+extern fn shim_d2d_destroy_bitmap(bmp_id: u32) = "w32_d2d_destroy_bitmap";
+extern fn shim_d2d_draw_bitmap(target_id: u32, bmp_id: u32, x: f32, y: f32, w: f32, h: f32, opacity: f32) = "w32_d2d_draw_bitmap";
 
 fn d2d_create(win: Hwnd, vsync: bool = true) -> D2dTarget {
     return D2dTarget { id: shim_d2d_create(win.raw, vsync) };
@@ -167,4 +172,16 @@ fn measure_text(t: D2dTarget, text: const u8[:], font: D2dFont) -> f32, f32 {
         return 0.0, 0.0;
     }
     return w, h;
+}
+
+fn create_bitmap(t: D2dTarget, w: i32, h: i32, pixels_bgra: const u32[:]) -> D2dBitmap {
+    return D2dBitmap { id: shim_d2d_create_bitmap(t.id, w, h, pixels_bgra) };
+}
+
+fn destroy(b: D2dBitmap) {
+    shim_d2d_destroy_bitmap(b.id);
+}
+
+fn draw_bitmap(t: D2dTarget, bmp: D2dBitmap, x: f32, y: f32, w: f32, h: f32, opacity: f32 = 1.0) {
+    shim_d2d_draw_bitmap(t.id, bmp.id, x, y, w, h, opacity);
 }

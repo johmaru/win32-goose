@@ -23,6 +23,33 @@ extern fn shim_present_pixels(
     src_h: i32
 ) -> bool = "w32_present_pixels";
 
+struct GdiImage { id: u32 = 0 }
+fn is_valid(img: GdiImage) -> bool { img.id != 0 }
+
+extern fn shim_gdi_create_image(w: i32, h: i32, pixels_bgra: const u32[:]) -> u32 = "w32_gdi_create_image";
+extern fn shim_gdi_destroy_image(img_id: u32) = "w32_gdi_destroy_image";
+extern fn shim_gdi_draw_image(
+    hdc: u64,
+    img_id: u32,
+    dst_x: i32,
+    dst_y: i32,
+    dst_w: i32,
+    dst_h: i32,
+    opacity: f32
+) -> bool = "w32_gdi_draw_image";
+
+fn gdi_create_image(w: i32, h: i32, pixels_bgra: const u32[:]) -> GdiImage {
+    return GdiImage { id: shim_gdi_create_image(w, h, pixels_bgra) };
+}
+
+fn destroy(img: GdiImage) {
+    shim_gdi_destroy_image(img.id);
+}
+
+fn draw_image(dc: Hdc, img: GdiImage, dst_x: i32, dst_y: i32, dst_w: i32, dst_h: i32, opacity: f32 = 1.0) -> bool {
+    return shim_gdi_draw_image(dc.raw, img.id, dst_x, dst_y, dst_w, dst_h, opacity);
+}
+
 // Packs a 32-bit DIB pixel (0xAARRGGBB; note GDI COLORREF uses rgb() = 0x00BBGGRR).
 fn argb(r: u8, g: u8, b: u8, a: u8 = 255) -> u32 {
     b | ((g as u32) << 8) | ((r as u32) << 16) | ((a as u32) << 24)

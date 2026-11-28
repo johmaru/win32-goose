@@ -10,11 +10,17 @@
 #ifndef GL_R8
 #define GL_R8                          0x8229
 #endif
+#ifndef GL_RGBA8
+#define GL_RGBA8                       0x8058
+#endif
 #ifndef GL_RED
 #define GL_RED                         0x1903
 #endif
 #ifndef GL_TEXTURE0
 #define GL_TEXTURE0                    0x84C0
+#endif
+#ifndef GL_TEXTURE1
+#define GL_TEXTURE1                    0x84C1
 #endif
 #ifndef GL_CLAMP_TO_EDGE
 #define GL_CLAMP_TO_EDGE               0x812F
@@ -329,6 +335,7 @@ static int ensure_gl2d_core(void) {
 
 #define GL2D_MAX_TARGETS     8
 #define GL2D_MAX_FONTS       64
+#define GL2D_MAX_IMAGES      512
 #define GL2D_MAX_QUADS       512
 #define GL2D_MAX_VERTS       (GL2D_MAX_QUADS * 6)
 #define GL2D_ATLAS_W         1024
@@ -371,8 +378,10 @@ typedef struct {
     GLuint vbo;
     GLuint prog;
     GLuint atlas_tex;
+    GLuint bound_image_tex;
     GLint u_viewport;
     GLint u_atlas;
+    GLint u_image;
 
     gl2d_vert *verts;
     int vert_count;
@@ -400,8 +409,17 @@ typedef struct {
     HFONT hfont;
 } w32_gl2d_font;
 
+typedef struct {
+    int used;
+    uint32_t target_id;
+    GLuint tex;
+    int32_t w;
+    int32_t h;
+} w32_gl2d_image;
+
 static w32_gl2d_target g_targets[GL2D_MAX_TARGETS];
 static w32_gl2d_font   g_fonts[GL2D_MAX_FONTS];
+static w32_gl2d_image  g_images[GL2D_MAX_IMAGES];
 
 static w32_gl2d_target *get_target(uint32_t id) {
     if (id == 0 || id > GL2D_MAX_TARGETS) return NULL;
@@ -411,6 +429,11 @@ static w32_gl2d_target *get_target(uint32_t id) {
 static w32_gl2d_font *get_font(uint32_t id) {
     if (id == 0 || id > GL2D_MAX_FONTS) return NULL;
     return g_fonts[id - 1].used ? &g_fonts[id - 1] : NULL;
+}
+
+static w32_gl2d_image *get_image(uint32_t id) {
+    if (id == 0 || id > GL2D_MAX_IMAGES) return NULL;
+    return g_images[id - 1].used ? &g_images[id - 1] : NULL;
 }
 
 static const char *const k_gl2d_vs =
@@ -443,6 +466,7 @@ static const char *const k_gl2d_vs =
 static const char *const k_gl2d_fs =
     "#version 330 core\n"
     "uniform sampler2D uAtlas;\n"
+    "uniform sampler2D uImage;\n"
     "in vec2 vLocal;\n"
     "in vec2 vHalf;\n"
     "in float vRadius;\n"
@@ -480,8 +504,14 @@ static const char *const k_gl2d_fs =
     "        float dx = max(abs(vLocal.x) - vHalf.x, 0.0);\n"
     "        float d = length(vec2(dx, vLocal.y)) - vRadius;\n"
     "        alpha = clamp(0.5 - d, 0.0, 1.0);\n"
-    "    } else {\n"
+    "    } else if (vMode < 3.5) {\n"
     "        alpha = texture(uAtlas, vLocal).r;\n"
+    "    } else {\n"
+    "        vec4 tex = texture(uImage, vLocal);\n"
+    "        float outA = tex.a * vColor.a;\n"
+    "        if (outA <= 0.001) discard;\n"
+    "        FragColor = vec4(tex.rgb * vColor.rgb, outA);\n"
+    "        return;\n"
     "    }\n"
     "    if (alpha <= 0.001) discard;\n"
     "    FragColor = vec4(vColor.rgb, vColor.a * alpha);\n"
@@ -517,6 +547,12 @@ static void gl2d_flush(w32_gl2d_target *t) {
     g_gl2d.glActiveTexture(GL_TEXTURE0);
     g_gl2d.glBindTexture(GL_TEXTURE_2D, t->atlas_tex);
     g_gl2d.glUniform1i(t->u_atlas, 0);
+    if (t->bound_image_tex != 0) {
+        g_gl2d.glActiveTexture(GL_TEXTURE1);
+        g_gl2d.glBindTexture(GL_TEXTURE_2D, t->bound_image_tex);
+        g_gl2d.glUniform1i(t->u_image, 1);
+        g_gl2d.glActiveTexture(GL_TEXTURE0);
+    }
 
     g_gl2d.glBindVertexArray(t->vao);
     g_gl2d.glBindBuffer(GL_ARRAY_BUFFER, t->vbo);
@@ -736,6 +772,7 @@ uint32_t w32_gl2d_create(uint64_t hwnd_u64, uint8_t vsync) {
     t->prog = prog;
     t->u_viewport = g_gl2d.glGetUniformLocation(prog, "uViewport");
     t->u_atlas = g_gl2d.glGetUniformLocation(prog, "uAtlas");
+    t->u_image = g_gl2d.glGetUniformLocation(prog, "uImage");
 
     t->verts = (gl2d_vert *)malloc((size_t)GL2D_MAX_VERTS * sizeof(gl2d_vert));
     if (!t->verts || !gl2d_create_scratch_dib(t)) {
@@ -813,6 +850,12 @@ void w32_gl2d_destroy(uint32_t target_id) {
 
     if (g_gl2d.loaded_ogl && g_gl2d.loaded_core) {
         gl2d_make_current(t);
+        for (int i = 0; i < GL2D_MAX_IMAGES; i++) {
+            if (g_images[i].used && g_images[i].target_id == target_id) {
+                if (g_images[i].tex) g_gl2d.glDeleteTextures(1, &g_images[i].tex);
+                memset(&g_images[i], 0, sizeof(g_images[i]));
+            }
+        }
         if (t->atlas_tex) g_gl2d.glDeleteTextures(1, &t->atlas_tex);
         if (t->vbo) g_gl2d.glDeleteBuffers(1, &t->vbo);
         if (t->vao) g_gl2d.glDeleteVertexArrays(1, &t->vao);
@@ -1287,4 +1330,90 @@ uint8_t w32_gl2d_readback_pixel(uint32_t target_id, int32_t x, int32_t y, uint32
     g_gl2d.glReadPixels((GLint)x, (GLint)gl_y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, &px);
     *out_rgba = px;
     return g_gl2d.glGetError() == GL_NO_ERROR ? 1 : 0;
+}
+
+uint32_t w32_gl2d_create_image(uint32_t target_id, int32_t w, int32_t h, w32_u32_slice pixels_bgra) {
+    w32_gl2d_target *t = get_target(target_id);
+    if (!t || !g_gl2d.loaded_ogl || !g_gl2d.loaded_core || !pixels_bgra.data || w <= 0 || h <= 0) {
+        return 0;
+    }
+    int64_t count = (int64_t)w * (int64_t)h;
+    if (pixels_bgra.len < count || count > 64LL * 1024LL * 1024LL) return 0;
+
+    int slot = -1;
+    for (int i = 0; i < GL2D_MAX_IMAGES; i++) {
+        if (!g_images[i].used) { slot = i; break; }
+    }
+    if (slot < 0) return 0;
+
+    uint8_t *rgba = (uint8_t *)malloc((size_t)count * 4u);
+    if (!rgba) return 0;
+    for (int64_t i = 0; i < count; i++) {
+        uint32_t px = pixels_bgra.data[i];
+        rgba[i * 4 + 0] = (uint8_t)((px >> 16) & 0xFFu); /* R */
+        rgba[i * 4 + 1] = (uint8_t)((px >> 8) & 0xFFu);  /* G */
+        rgba[i * 4 + 2] = (uint8_t)(px & 0xFFu);         /* B */
+        rgba[i * 4 + 3] = (uint8_t)((px >> 24) & 0xFFu); /* A */
+    }
+
+    gl2d_make_current(t);
+    GLuint tex = 0;
+    g_gl2d.glGenTextures(1, &tex);
+    if (!tex) {
+        free(rgba);
+        return 0;
+    }
+    g_gl2d.glBindTexture(GL_TEXTURE_2D, tex);
+    g_gl2d.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    g_gl2d.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    g_gl2d.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    g_gl2d.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    g_gl2d.glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    g_gl2d.glTexImage2D(
+        GL_TEXTURE_2D, 0, GL_RGBA8, (GLsizei)w, (GLsizei)h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba
+    );
+    g_gl2d.glBindTexture(GL_TEXTURE_2D, 0);
+    free(rgba);
+
+    g_images[slot].used = 1;
+    g_images[slot].target_id = target_id;
+    g_images[slot].tex = tex;
+    g_images[slot].w = w;
+    g_images[slot].h = h;
+    return (uint32_t)(slot + 1);
+}
+
+void w32_gl2d_destroy_image(uint32_t img_id) {
+    w32_gl2d_image *img = get_image(img_id);
+    if (!img) return;
+    w32_gl2d_target *t = get_target(img->target_id);
+    if (t && g_gl2d.loaded_ogl && g_gl2d.loaded_core && img->tex) {
+        gl2d_make_current(t);
+        g_gl2d.glDeleteTextures(1, &img->tex);
+    }
+    memset(img, 0, sizeof(*img));
+}
+
+void w32_gl2d_draw_image(
+    uint32_t target_id,
+    uint32_t img_id,
+    float x, float y, float w, float h,
+    float opacity
+) {
+    w32_gl2d_target *t = get_target(target_id);
+    w32_gl2d_image *img = get_image(img_id);
+    if (!t || !img || img->target_id != target_id || !img->tex || w <= 0.0f || h <= 0.0f || opacity <= 0.0f) {
+        return;
+    }
+    float op = opacity > 1.0f ? 1.0f : opacity;
+    gl2d_flush(t);
+    t->bound_image_tex = img->tex;
+    gl2d_vert q[4];
+    q[0] = (gl2d_vert){ x,     y,     0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 4.0f, 1.0f, 1.0f, 1.0f, op };
+    q[1] = (gl2d_vert){ x + w, y,     1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 4.0f, 1.0f, 1.0f, 1.0f, op };
+    q[2] = (gl2d_vert){ x + w, y + h, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 4.0f, 1.0f, 1.0f, 1.0f, op };
+    q[3] = (gl2d_vert){ x,     y + h, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 4.0f, 1.0f, 1.0f, 1.0f, op };
+    gl2d_push_quad(t, q);
+    gl2d_flush(t);
+    t->bound_image_tex = 0;
 }

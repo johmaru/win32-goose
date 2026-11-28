@@ -1,4 +1,5 @@
 #define D2D_USE_C_DEFINITIONS
+#include <stdlib.h>
 #include <string.h>
 
 #include "win32_internal.h"
@@ -70,6 +71,20 @@ static HRESULT d2d_factory_create_hwnd_rt(
 }
 
 /* ID2D1RenderTarget / ID2D1HwndRenderTarget slots */
+static HRESULT d2d_rt_create_bitmap(
+    void *rt,
+    D2D1_SIZE_U size,
+    const void *src_data,
+    UINT32 pitch,
+    const D2D1_BITMAP_PROPERTIES *props,
+    void **out_bmp
+) {
+    typedef HRESULT (STDMETHODCALLTYPE *pfn)(
+        void *, D2D1_SIZE_U, const void *, UINT32, const D2D1_BITMAP_PROPERTIES *, void **
+    );
+    return ((pfn)com_vtbl(rt)[4])(rt, size, src_data, pitch, props, out_bmp);
+}
+
 static HRESULT d2d_rt_create_solid_brush(void *rt, const D2D1_COLOR_F *col, void **out_brush) {
     typedef HRESULT (STDMETHODCALLTYPE *pfn)(void *, const D2D1_COLOR_F *, const D2D1_BRUSH_PROPERTIES *, void **);
     return ((pfn)com_vtbl(rt)[8])(rt, col, NULL, out_brush);
@@ -113,6 +128,19 @@ static void d2d_rt_draw_ellipse(void *rt, const D2D1_ELLIPSE *el, void *brush, f
 static void d2d_rt_fill_ellipse(void *rt, const D2D1_ELLIPSE *el, void *brush) {
     typedef void (STDMETHODCALLTYPE *pfn)(void *, const D2D1_ELLIPSE *, void *);
     ((pfn)com_vtbl(rt)[21])(rt, el, brush);
+}
+
+static void d2d_rt_draw_bitmap(
+    void *rt,
+    void *bmp,
+    const D2D1_RECT_F *dst_rc,
+    float opacity,
+    D2D1_BITMAP_INTERPOLATION_MODE interp
+) {
+    typedef void (STDMETHODCALLTYPE *pfn)(
+        void *, void *, const D2D1_RECT_F *, float, D2D1_BITMAP_INTERPOLATION_MODE, const D2D1_RECT_F *
+    );
+    ((pfn)com_vtbl(rt)[26])(rt, bmp, dst_rc, opacity, interp, NULL);
 }
 
 static void d2d_rt_draw_text(
@@ -233,6 +261,7 @@ static HRESULT dwrite_layout_get_metrics(void *layout, w32_dwrite_text_metrics *
 
 #define W32_MAX_D2D_TARGETS 8
 #define W32_MAX_D2D_FONTS   64
+#define W32_MAX_D2D_BITMAPS 512
 
 typedef struct {
     int used;
@@ -252,8 +281,18 @@ typedef struct {
     void *fmt;
 } w32_d2d_font;
 
+typedef struct {
+    int used;
+    uint32_t target_id;
+    int32_t w;
+    int32_t h;
+    void *bmp;
+    uint32_t *premul_bgra;
+} w32_d2d_bitmap;
+
 static w32_d2d_target g_targets[W32_MAX_D2D_TARGETS];
 static w32_d2d_font g_fonts[W32_MAX_D2D_FONTS];
+static w32_d2d_bitmap g_bitmaps[W32_MAX_D2D_BITMAPS];
 
 static w32_d2d_target *get_target(uint32_t id) {
     if (id == 0 || id > W32_MAX_D2D_TARGETS) return NULL;
@@ -263,6 +302,11 @@ static w32_d2d_target *get_target(uint32_t id) {
 static w32_d2d_font *get_font(uint32_t id) {
     if (id == 0 || id > W32_MAX_D2D_FONTS) return NULL;
     return g_fonts[id - 1].used ? &g_fonts[id - 1] : NULL;
+}
+
+static w32_d2d_bitmap *get_bitmap(uint32_t id) {
+    if (id == 0 || id > W32_MAX_D2D_BITMAPS) return NULL;
+    return g_bitmaps[id - 1].used ? &g_bitmaps[id - 1] : NULL;
 }
 
 static int create_hwnd_target(w32_d2d_target *t) {
@@ -304,6 +348,13 @@ static int create_hwnd_target(w32_d2d_target *t) {
 
 static void d2d_release_target_resources(w32_d2d_target *t) {
     if (!t) return;
+    uint32_t tid = (uint32_t)(t - g_targets) + 1u;
+    for (int i = 0; i < W32_MAX_D2D_BITMAPS; i++) {
+        if (g_bitmaps[i].used && g_bitmaps[i].target_id == tid && g_bitmaps[i].bmp) {
+            com_release(g_bitmaps[i].bmp);
+            g_bitmaps[i].bmp = NULL;
+        }
+    }
     com_release(t->brush);
     com_release(t->rt);
     t->brush = NULL;
@@ -393,6 +444,13 @@ uint32_t w32_d2d_create(uint64_t hwnd_u64, uint8_t vsync) {
 void w32_d2d_destroy(uint32_t target_id) {
     w32_d2d_target *t = get_target(target_id);
     if (!t) return;
+    for (int i = 0; i < W32_MAX_D2D_BITMAPS; i++) {
+        if (g_bitmaps[i].used && g_bitmaps[i].target_id == target_id) {
+            com_release(g_bitmaps[i].bmp);
+            free(g_bitmaps[i].premul_bgra);
+            memset(&g_bitmaps[i], 0, sizeof(g_bitmaps[i]));
+        }
+    }
     d2d_release_target_resources(t);
     com_release(t->dw_factory);
     com_release(t->factory);
@@ -636,4 +694,87 @@ uint8_t w32_d2d_measure_text(
     if (out_w) *out_w = m.width_including_trailing_whitespace;
     if (out_h) *out_h = m.height;
     return 1;
+}
+
+static uint32_t d2d_premul_bgra(uint32_t px) {
+    uint32_t a = (px >> 24) & 0xFFu;
+    if (a == 255u) return px;
+    if (a == 0u) return 0u;
+    uint32_t r = (((px >> 16) & 0xFFu) * a + 127u) / 255u;
+    uint32_t g = (((px >> 8) & 0xFFu) * a + 127u) / 255u;
+    uint32_t b = ((px & 0xFFu) * a + 127u) / 255u;
+    return (a << 24) | (r << 16) | (g << 8) | b;
+}
+
+static int d2d_upload_bitmap(w32_d2d_target *t, w32_d2d_bitmap *b) {
+    if (!t || !t->rt || !b || !b->premul_bgra || b->w <= 0 || b->h <= 0) return 0;
+    D2D1_SIZE_U sz = { (UINT32)b->w, (UINT32)b->h };
+    D2D1_BITMAP_PROPERTIES props;
+    props.pixelFormat.format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    props.pixelFormat.alphaMode = D2D1_ALPHA_MODE_PREMULTIPLIED;
+    props.dpiX = 96.0f;
+    props.dpiY = 96.0f;
+    void *bmp = NULL;
+    HRESULT hr = d2d_rt_create_bitmap(t->rt, sz, b->premul_bgra, (UINT32)(b->w * 4), &props, &bmp);
+    if (FAILED(hr) || !bmp) return 0;
+    b->bmp = bmp;
+    return 1;
+}
+
+uint32_t w32_d2d_create_bitmap(uint32_t target_id, int32_t w, int32_t h, w32_u32_slice pixels_bgra) {
+    w32_d2d_target *t = get_target(target_id);
+    if (!t || !t->rt || !pixels_bgra.data || w <= 0 || h <= 0) return 0;
+    int64_t count = (int64_t)w * (int64_t)h;
+    if (pixels_bgra.len < count || count > 64LL * 1024LL * 1024LL) return 0;
+
+    int slot = -1;
+    for (int i = 0; i < W32_MAX_D2D_BITMAPS; i++) {
+        if (!g_bitmaps[i].used) { slot = i; break; }
+    }
+    if (slot < 0) return 0;
+
+    uint32_t *premul = (uint32_t *)malloc((size_t)count * sizeof(uint32_t));
+    if (!premul) return 0;
+    for (int64_t i = 0; i < count; i++) {
+        premul[i] = d2d_premul_bgra(pixels_bgra.data[i]);
+    }
+
+    w32_d2d_bitmap *b = &g_bitmaps[slot];
+    memset(b, 0, sizeof(*b));
+    b->target_id = target_id;
+    b->w = w;
+    b->h = h;
+    b->premul_bgra = premul;
+    if (!d2d_upload_bitmap(t, b)) {
+        free(premul);
+        memset(b, 0, sizeof(*b));
+        return 0;
+    }
+    b->used = 1;
+    return (uint32_t)(slot + 1);
+}
+
+void w32_d2d_destroy_bitmap(uint32_t bmp_id) {
+    w32_d2d_bitmap *b = get_bitmap(bmp_id);
+    if (!b) return;
+    com_release(b->bmp);
+    free(b->premul_bgra);
+    memset(b, 0, sizeof(*b));
+}
+
+void w32_d2d_draw_bitmap(
+    uint32_t target_id,
+    uint32_t bmp_id,
+    float x, float y, float w, float h,
+    float opacity
+) {
+    w32_d2d_target *t = get_target(target_id);
+    w32_d2d_bitmap *b = get_bitmap(bmp_id);
+    if (!t || !t->rt || !b || b->target_id != target_id || w <= 0.0f || h <= 0.0f || opacity <= 0.0f) {
+        return;
+    }
+    if (!b->bmp && !d2d_upload_bitmap(t, b)) return;
+    float op = opacity > 1.0f ? 1.0f : opacity;
+    D2D1_RECT_F rc = { x, y, x + w, y + h };
+    d2d_rt_draw_bitmap(t->rt, b->bmp, &rc, op, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
 }

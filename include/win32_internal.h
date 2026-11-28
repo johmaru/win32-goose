@@ -23,6 +23,7 @@ uint8_t w32_append_wide_as_utf8(const wchar_t *ws, int wlen, gs_rref out);
 uint32_t w32_capture_hdrop(void *hdrop);
 
 #define W32_WM_WEBVIEW_EVENT (WM_APP + 2)
+#define W32_WM_HTTP_ASYNC    (WM_APP + 3)
 
 /* Parent window teardown hook for active child WebView2 instances. */
 void w32_webview_on_parent_destroy(HWND hwnd);

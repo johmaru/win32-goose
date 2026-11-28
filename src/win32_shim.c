@@ -68,8 +68,8 @@ static int w32_queue_empty(void) {
 }
 
 static void w32_queue_push(const w32_event *ev) {
-    /* Coalesce consecutive WM_PAINT, WM_SIZE, WM_MOVE, or W32_WM_WEBVIEW_EVENT events for the same window. */
-    if ((ev->msg == WM_PAINT || ev->msg == WM_SIZE || ev->msg == WM_MOVE || ev->msg == W32_WM_WEBVIEW_EVENT) && !w32_queue_empty()) {
+    /* Coalesce consecutive WM_PAINT, WM_SIZE, WM_MOVE, W32_WM_WEBVIEW_EVENT, or W32_WM_HTTP_ASYNC events for the same window. */
+    if ((ev->msg == WM_PAINT || ev->msg == WM_SIZE || ev->msg == WM_MOVE || ev->msg == W32_WM_WEBVIEW_EVENT || ev->msg == W32_WM_HTTP_ASYNC) && !w32_queue_empty()) {
         uint32_t idx = g_ev_head;
         while (idx != g_ev_tail) {
             if (g_events[idx].msg == ev->msg && g_events[idx].hwnd == ev->hwnd) {
@@ -408,6 +408,7 @@ static LRESULT CALLBACK w32_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
 
         case W32_WM_WEBVIEW_EVENT:
+        case W32_WM_HTTP_ASYNC:
             ev.command_id = (uint32_t)wp;
             w32_queue_push(&ev);
             return 0;

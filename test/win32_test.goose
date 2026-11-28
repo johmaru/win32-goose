@@ -1574,6 +1574,173 @@ fn test_webview() {
     print("[OK] WebView2 (runtime=", ver, ", eval=49, JS<->Goose bridge, vhost, clipped bounds, mute)");
 }
 
+fn test_icons_alpha_images_and_async_http() {
+    // 1. WIC in-memory decode + resize + EXE icon extraction ("notepad.exe").
+    let tmp = win32::temp_dir();
+    var png_path: u8[>..] = [];
+    format(png_path, tmp, "win32_goose_mem_", win32::GetCurrentProcessId(), ".png");
+    defer win32::delete_file(png_path);
+
+    // 16x16 semi-transparent blue-ish BGRA image (A=0xC0, R=0x20, G=0x80, B=0xF0) -> 0xC02080F0.
+    var src_bgra: u32[256] = [0xC02080F0; 256];
+    assert(win32::image_save_png(png_path, src_bgra, 16, 16));
+
+    var raw_png: u8[>..] = [];
+    assert(win32::read_file_bytes(png_path, raw_png));
+    assert(raw_png.len > 16);
+
+    var dec_bgra: u32[>..] = [];
+    var dw: i32 = 0;
+    var dh: i32 = 0;
+    assert(win32::image_load_bgra_mem(raw_png, dec_bgra, dw, dh));
+    assert(dw == 16 && dh == 16 && dec_bgra.len == 256 && dec_bgra[0] == 0xC02080F0);
+
+    var resized: u32[>..] = [];
+    assert(win32::image_resize_bgra(dec_bgra, 16, 16, 32, 32, resized));
+    assert(resized.len == 1024);
+    let rpx = resized[512];
+    let ra = ((rpx >> 24) & 0xFF) as! i32;
+    let rr = ((rpx >> 16) & 0xFF) as! i32;
+    let rg = ((rpx >> 8) & 0xFF) as! i32;
+    let rb = (rpx & 0xFF) as! i32;
+    assert(ra >= 0xBE && ra <= 0xC2 && rr >= 0x1E && rr <= 0x22 && rg >= 0x7E && rg <= 0x82 && rb >= 0xEE && rb <= 0xF2);
+
+    var exe_px: u32[>..] = [];
+    var ew: i32 = 0;
+    var eh: i32 = 0;
+    assert(win32::extract_file_icon_bgra("notepad.exe", 64, exe_px, ew, eh));
+    assert(ew >= 16 && eh >= 16 && exe_px.len == (ew as i64) * eh);
+
+    var bad_px: u32[>..] = [];
+    var bw: i32 = 0;
+    var bh: i32 = 0;
+    assert(!win32::extract_file_icon_bgra("C:\\__nonexistent_yulauncher_test__.exe", 64, bad_px, bw, bh));
+
+    // 2. Software GDI alpha-blended image draw.
+    {
+        let win = win32::create_window("win32-goose gdi img test", 96, 96);
+        assert(win.is_valid());
+        defer win.destroy();
+
+        let gimg = win32::gdi_create_image(32, 32, resized);
+        assert(gimg.is_valid());
+        defer gimg.destroy();
+
+        var rc = win32::Rect {};
+        let dc = win.begin_paint(rc);
+        assert(dc.is_valid());
+        assert(dc.draw_image(gimg, 16, 16, 48, 48, 1.0));
+        win.end_paint();
+    }
+
+    // 3. Direct2D bitmap create & draw.
+    {
+        let win = win32::create_window("win32-goose d2d bmp test", 96, 96);
+        assert(win.is_valid());
+        defer win.destroy();
+
+        let d2d = win32::d2d_create(win, false);
+        assert(d2d.is_valid());
+        defer d2d.destroy();
+
+        let bmp = d2d.create_bitmap(32, 32, resized);
+        assert(bmp.is_valid());
+        defer bmp.destroy();
+
+        d2d.begin_draw();
+        d2d.clear(win32::colorf(0.1, 0.1, 0.1, 1.0));
+        d2d.draw_bitmap(bmp, 16.0, 16.0, 48.0, 48.0, 1.0);
+        assert(d2d.end_draw());
+    }
+
+    // 4. OpenGL 3.3 gl2d image create, draw & readback verification.
+    {
+        let win = win32::create_window("win32-goose gl2d img test", 96, 96);
+        assert(win.is_valid());
+        defer win.destroy();
+
+        let gl2d = win32::gl2d_create(win, false);
+        assert(gl2d.is_valid());
+        defer gl2d.destroy();
+
+        // Opaque orange BGRA: A=0xFF, R=0xF0, G=0x70, B=0x10 -> 0xFFF07010.
+        var orange_bgra: u32[64] = [0xFFF07010; 64];
+        let gimg = gl2d.create_image(8, 8, orange_bgra);
+        assert(gimg.is_valid());
+        defer gimg.destroy();
+
+        gl2d.begin_draw(win32::colorf(0.0, 0.0, 0.0, 1.0));
+        gl2d.draw_image(gimg, 16.0, 16.0, 64.0, 64.0, 1.0);
+        var px: u32 = 0;
+        assert(gl2d.readback_pixel(48, 48, px));
+        let r = px & 0xFF;
+        let g = (px >> 8) & 0xFF;
+        let b = (px >> 16) & 0xFF;
+        assert(r >= 225 && g >= 95 && g <= 130 && b <= 30);
+        assert(gl2d.end_draw());
+    }
+
+    // 5. Background non-blocking WinHTTP GET against local loopback TCP server.
+    {
+        assert(win32::net_init());
+        let srv = win32::tcp_listen("127.0.0.1", 0);
+        assert(srv.is_valid());
+        defer srv.close();
+        let port = srv.local_port();
+        assert(port != 0);
+
+        let notify_win = win32::create_window("win32-goose async http notify", 64, 64);
+        assert(notify_win.is_valid());
+        defer notify_win.destroy();
+
+        var url: u8[>..] = [];
+        format(url, "http://127.0.0.1:", port, "/icon.png");
+        let rid = win32::http_get_async(url, "", 65536, 4000, notify_win);
+        assert(rid > 0);
+
+        // Wait for the worker thread to connect and serve the PNG bytes.
+        assert(srv.poll_readable(3000) > 0);
+        let cli = srv.accept();
+        assert(cli.is_valid());
+        var req_buf: u8[1024] = [0; 1024];
+        let _rn = cli.recv(req_buf);
+        var resp: u8[>..] = [];
+        format(
+            resp,
+            "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: ",
+            raw_png.len,
+            "\r\nConnection: close\r\n\r\n"
+        );
+        resp.append(raw_png);
+        assert(cli.send_all(resp));
+        cli.shutdown();
+        cli.close();
+
+        var meta = win32::HttpAsyncMeta {};
+        var got_body: u8[>..] = [];
+        var got_ct: u8[>..] = [];
+        var got_url: u8[>..] = [];
+        var polled = false;
+        let deadline = win32::tick_count_ms() + 4000;
+        while win32::tick_count_ms() < deadline && !polled {
+            var ev = win32::Event {};
+            while win32::poll_event(ev) {}
+            if win32::http_poll_async(meta, got_body, got_ct, got_url) {
+                polled = true;
+                break;
+            }
+            win32::Sleep(10);
+        }
+        assert(polled && meta.req_id == rid && meta.ok && !meta.truncated && meta.status == 200);
+        assert(got_body.len == raw_png.len);
+        assert(got_ct == "image/png");
+        assert(got_url == url);
+        win32::http_cancel_all_async();
+    }
+
+    print("[OK] WIC mem/resize, EXE icon extraction (", ew, "x", eh, "), D2D/GL2D/GDI alpha images & async WinHTTP");
+}
+
 fn main() {
     test_utf16_roundtrip();
     test_pure_externs();
@@ -1594,6 +1761,7 @@ fn main() {
     test_gl2d_sdf_and_text_atlas();
     test_resize_viewport_and_min_size();
     test_webview();
+    test_icons_alpha_images_and_async_http();
     verify_dialog_linkage(false);
     print("ALL WIN32 TESTS PASSED");
 }
